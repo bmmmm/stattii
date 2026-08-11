@@ -32,12 +32,13 @@ Server:
   stattii serve [--listen :8788] [--data ./data] [--base-url URL] ...
 
 Client (uses STATTII_URL and STATTII_TOKEN):
-  stattii event    list | create | show | confirm | cancel | move | links | responses | propagation
+  stattii event    list | create | show | confirm | cancel | reinstate | move | links | responses | propagation
   stattii person   list | add
   stattii assign   <event-id> <person-id>
   stattii broadcast list | add | rm
   stattii webhook  list | add | rm
   stattii proposal list | accept | reject
+  stattii outbox   list [--pending] | retry <id>
   stattii audit    [--limit N]
   stattii tick
   stattii version

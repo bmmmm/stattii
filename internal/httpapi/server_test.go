@@ -84,7 +84,7 @@ func TestCreateEventViaAPI(t *testing.T) {
 func TestActionPageFlow(t *testing.T) {
 	svc, h := newTestServer(t)
 	start := time.Now().Add(72 * time.Hour).UTC()
-	e, _ := svc.CreateEvent("Click Test", "", "", start, start.Add(time.Hour))
+	e, _ := svc.CreateEvent(core.EventInput{Title: "Click Test", StartsAt: start, EndsAt: start.Add(time.Hour)})
 	p, _ := svc.AddPerson("ana", core.TrustRespond, nil)
 	svc.Assign(e.ID, p.ID, "")
 	confirmURL, _, err := svc.GenerateLinks(e.ID, p.ID)
@@ -111,6 +111,36 @@ func TestActionPageFlow(t *testing.T) {
 	}
 }
 
+func TestActionProposeFlow(t *testing.T) {
+	svc, h := newTestServer(t)
+	start := time.Now().Add(72 * time.Hour).UTC()
+	e, _ := svc.CreateEvent(core.EventInput{Title: "Move Me", StartsAt: start, EndsAt: start.Add(time.Hour)})
+	p, _ := svc.AddPerson("ana", core.TrustRespond, nil)
+	svc.Assign(e.ID, p.ID, "")
+	_, cancelURL, err := svc.GenerateLinks(e.ID, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(cancelURL)
+
+	form := url.Values{"starts_at": {"2026-09-01T19:00"}, "note": {"room clash"}}
+	req := httptest.NewRequest("POST", u.Path+"/propose", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "proposal was sent") {
+		t.Fatalf("propose: %d\n%s", w.Code, w.Body)
+	}
+	props := svc.Proposals()
+	if len(props) != 1 || props[0].Kind != "move" || props[0].PersonID != p.ID {
+		t.Fatalf("proposal not filed: %+v", props)
+	}
+	// The event itself is untouched.
+	if got, _ := svc.EventByID(e.ID); !got.StartsAt.Equal(start) {
+		t.Fatal("propose must not move the event")
+	}
+}
+
 func TestUnknownTokenIs404(t *testing.T) {
 	_, h := newTestServer(t)
 	if w := do(t, h, "GET", "/a/deadbeefdeadbeefdeadbeefdeadbeef", "", ""); w.Code != http.StatusNotFound {
@@ -121,7 +151,7 @@ func TestUnknownTokenIs404(t *testing.T) {
 func TestFeedServed(t *testing.T) {
 	svc, h := newTestServer(t)
 	start := time.Now().Add(24 * time.Hour).UTC()
-	svc.CreateEvent("Feed Event", "", "", start, start.Add(time.Hour))
+	svc.CreateEvent(core.EventInput{Title: "Feed Event", StartsAt: start, EndsAt: start.Add(time.Hour)})
 	w := do(t, h, "GET", "/feed.ics", "", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("got %d", w.Code)

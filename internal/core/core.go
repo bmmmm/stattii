@@ -5,7 +5,10 @@
 // transaction, and the scheduler's due-calculations.
 package core
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // TrustLevel controls how much power a person has over their events.
 type TrustLevel string
@@ -29,19 +32,44 @@ const (
 )
 
 type Event struct {
-	ID              string      `json:"id"`
-	Title           string      `json:"title"`
-	Location        string      `json:"location,omitempty"`
-	Note            string      `json:"note,omitempty"`
-	StartsAt        time.Time   `json:"starts_at"`
-	EndsAt          time.Time   `json:"ends_at"`
-	Status          EventStatus `json:"status"`
-	Seq             int         `json:"seq"` // ICS SEQUENCE, bumped on every change
-	CancelReason    string      `json:"cancel_reason,omitempty"`
-	CreatedAt       time.Time   `json:"created_at"`
-	CancelledAt     time.Time   `json:"cancelled_at"`
-	ReminderSentAt  time.Time   `json:"reminder_sent_at"`
-	DeadlineFiredAt time.Time   `json:"deadline_fired_at"`
+	ID       string      `json:"id"`
+	Title    string      `json:"title"`
+	Location string      `json:"location,omitempty"`
+	Note     string      `json:"note,omitempty"`
+	StartsAt time.Time   `json:"starts_at"`
+	EndsAt   time.Time   `json:"ends_at"`
+	Status   EventStatus `json:"status"`
+	Seq      int         `json:"seq"` // ICS SEQUENCE, bumped on every change
+	// IfUnconfirmed is the dead-man-switch: "" or "notify" pages the admin
+	// on deadline.passed, "cancel" auto-cancels with full propagation.
+	IfUnconfirmed   string    `json:"if_unconfirmed,omitempty"`
+	CancelReason    string    `json:"cancel_reason,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	CancelledAt     time.Time `json:"cancelled_at"`
+	ReminderSentAt  time.Time `json:"reminder_sent_at"`
+	DeadlineFiredAt time.Time `json:"deadline_fired_at"`
+}
+
+// EventInput is the validated payload for creating an event.
+type EventInput struct {
+	Title         string    `json:"title"`
+	Location      string    `json:"location"`
+	Note          string    `json:"note"`
+	StartsAt      time.Time `json:"starts_at"`
+	EndsAt        time.Time `json:"ends_at"`
+	IfUnconfirmed string    `json:"if_unconfirmed"`
+}
+
+func (in *EventInput) Validate() error {
+	if in.Title == "" || in.StartsAt.IsZero() {
+		return errors.New("title and starts_at are required")
+	}
+	switch in.IfUnconfirmed {
+	case "", "notify", "cancel":
+		return nil
+	default:
+		return errors.New(`if_unconfirmed must be "notify" (default) or "cancel"`)
+	}
 }
 
 // Address is one way to reach a person or an audience.
@@ -122,17 +150,27 @@ type Webhook struct {
 	Events []string `json:"events,omitempty"` // empty = all
 }
 
+// Button is an inline action a channel may render (Telegram inline
+// keyboards); channels that cannot render buttons ignore them — the body
+// always carries equivalent links.
+type Button struct {
+	Label string `json:"label"`
+	Data  string `json:"data,omitempty"` // action-link token for callbacks
+	URL   string `json:"url,omitempty"`
+}
+
 // OutboxItem is one pending or delivered outbound message. All sends go
 // through the outbox so retries, delivery proof, and escalation are uniform.
 type OutboxItem struct {
 	ID          string            `json:"id"`
 	EventID     string            `json:"event_id,omitempty"`
 	PersonID    string            `json:"person_id,omitempty"`
-	Purpose     string            `json:"purpose"` // "reminder" | "cancellation" | "moved" | "deadline" | "proposal" | "escalation" | "webhook"
+	Purpose     string            `json:"purpose"` // "reminder" | "cancellation" | "moved" | "reinstated" | "proposal" | "escalation" | "webhook"
 	Kind        string            `json:"kind"`    // channel kind
 	To          string            `json:"to"`
 	Subject     string            `json:"subject"`
 	Body        string            `json:"body"`
+	Buttons     []Button          `json:"buttons,omitempty"`
 	Headers     map[string]string `json:"headers,omitempty"`
 	Attempts    int               `json:"attempts"`
 	NextAttempt time.Time         `json:"next_attempt"`

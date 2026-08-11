@@ -97,6 +97,8 @@ func cmdClient(args []string) error {
 		return cmdWebhook(rest)
 	case "proposal":
 		return cmdProposal(rest)
+	case "outbox":
+		return cmdOutbox(rest)
 	case "audit":
 		fs := flag.NewFlagSet("audit", flag.ExitOnError)
 		limit := fs.Int("limit", 200, "max entries")
@@ -125,6 +127,7 @@ func cmdEvent(args []string) error {
 		end := fs.String("end", "", "end time")
 		location := fs.String("location", "", "location")
 		note := fs.String("note", "", "note")
+		ifUnconfirmed := fs.String("if-unconfirmed", "notify", "notify | cancel (dead-man-switch)")
 		fs.Parse(rest)
 		start, err := parseWhen(*at)
 		if err != nil {
@@ -136,9 +139,9 @@ func cmdEvent(args []string) error {
 		}
 		return api("POST", "/api/v1/events", map[string]any{
 			"title": *title, "location": *location, "note": *note,
-			"starts_at": start, "ends_at": endT,
+			"starts_at": start, "ends_at": endT, "if_unconfirmed": *ifUnconfirmed,
 		})
-	case "show", "confirm", "responses", "propagation":
+	case "show", "confirm", "reinstate", "responses", "propagation":
 		if len(rest) < 1 {
 			return fmt.Errorf("usage: stattii event %s <event-id>", sub)
 		}
@@ -148,6 +151,8 @@ func cmdEvent(args []string) error {
 			return api("GET", "/api/v1/events/"+id, nil)
 		case "confirm":
 			return api("POST", "/api/v1/events/"+id+"/confirm", map[string]any{})
+		case "reinstate":
+			return api("POST", "/api/v1/events/"+id+"/reinstate", map[string]any{})
 		case "responses":
 			return api("GET", "/api/v1/events/"+id+"/responses", nil)
 		default:
@@ -266,6 +271,30 @@ func cmdWebhook(args []string) error {
 		return api("DELETE", "/api/v1/webhooks/"+args[1], nil)
 	default:
 		return fmt.Errorf("unknown webhook subcommand %q", args[0])
+	}
+}
+
+func cmdOutbox(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: stattii outbox list [--pending] | retry <id>")
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("outbox list", flag.ExitOnError)
+		pending := fs.Bool("pending", false, "only undelivered items")
+		fs.Parse(args[1:])
+		path := "/api/v1/outbox"
+		if *pending {
+			path += "?pending=1"
+		}
+		return api("GET", path, nil)
+	case "retry":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: stattii outbox retry <id>")
+		}
+		return api("POST", "/api/v1/outbox/"+args[1]+"/retry", nil)
+	default:
+		return fmt.Errorf("unknown outbox subcommand %q", args[0])
 	}
 }
 

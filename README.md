@@ -54,6 +54,12 @@ Per person, `--trust` decides how much power their portal link carries:
 
 Every person gets a long-lived portal link (`/p/<token>`) listing their
 events; per-event action links (`/a/<token>`) expire with the event.
+Independent of trust level, every action page offers "suggest a new time
+instead" — that files a proposal, which never changes anything by itself.
+
+On Telegram, reminders carry inline buttons: one tap on ✅/❌ answers
+directly in the chat (the server long-polls the Bot API; no public webhook
+needed). The links in the message text remain as fallback.
 
 ## Cancellation propagation
 
@@ -66,9 +72,16 @@ stattii event propagation <id>   # {total, delivered, pending, failed, complete}
 ```
 
 Items undelivered after `--escalate-after` (default 10 min) page the admin
-(`STATTII_ADMIN_NOTIFY=telegram:<chat-id>` or `email:<addr>`). If nobody
-answers the reminder at all, `deadline.passed` fires (webhook + admin ping)
-`--deadline-lead` (default 24h) before start.
+(`STATTII_ADMIN_NOTIFY=telegram:<chat-id>` or `email:<addr>`); inspect and
+re-arm them with `stattii outbox list --pending` / `stattii outbox retry
+<id>`. A wrong cancellation is withdrawn with `stattii event reinstate <id>`
+— that too is a propagation transaction and restarts the confirmation cycle.
+
+If nobody answers the reminder at all, `deadline.passed` fires (webhook +
+admin ping) `--deadline-lead` (default 24h) before start. Events created
+with `--if-unconfirmed cancel` go further: silence auto-cancels them with
+full propagation — the dead-man-switch for "nobody checked, so nobody
+stands in front of a locked door".
 
 ## Configuration
 

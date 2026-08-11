@@ -15,6 +15,7 @@ type actionData struct {
 	Token    string
 	Done     bool
 	Conflict bool // tried to act on an already-cancelled event
+	Proposed bool // a move proposal was just filed
 }
 
 type portalData struct {
@@ -55,7 +56,9 @@ details{margin:.5rem 0}
 {{define "action"}}{{template "head"}}
 <h1>Hello {{.View.Person.Name}}</h1>
 <div class="card">{{template "event" .View.Event}}</div>
-{{if .Done}}
+{{if .Proposed}}
+  <p><strong>Your new-time proposal was sent.</strong> The organizer decides; you will be notified.</p>
+{{else if .Done}}
   {{if .Conflict}}<p>This event was <strong>already cancelled</strong> — no change possible.</p>
   {{else if eq .View.Action "confirm"}}<p><strong>Thanks — recorded as taking place.</strong></p>
   {{else}}<p><strong>Recorded: the event is cancelled.</strong> Everyone involved is being notified.</p>{{end}}
@@ -68,6 +71,15 @@ details{margin:.5rem 0}
     {{else}}<button class="no" type="submit">Cancel this event</button>{{end}}
   </form>
   <p class="muted">One click on the button above is enough. This link is personal.</p>
+  <details><summary>Suggest a new time instead</summary>
+    <form method="post" action="/a/{{.Token}}/propose">
+      <label>New start <input type="datetime-local" name="starts_at" required></label>
+      <label>New end <input type="datetime-local" name="ends_at"></label>
+      <input name="note" placeholder="Why?">
+      <button type="submit">Send proposal</button>
+    </form>
+    <p class="muted">A proposal does not change anything by itself — the organizer decides.</p>
+  </details>
 {{end}}
 </body></html>{{end}}
 

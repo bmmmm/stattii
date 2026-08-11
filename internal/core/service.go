@@ -22,6 +22,7 @@ const timeFmt = "Mon, 02 Jan 2006 15:04 MST"
 type Message struct {
 	Subject string
 	Body    string
+	Buttons []Button
 	Headers map[string]string
 }
 
@@ -110,32 +111,61 @@ func (s *Service) auditLocked(kind string, data any) {
 
 // ---- events ---------------------------------------------------------------
 
-func (s *Service) CreateEvent(title, location, note string, start, end time.Time) (Event, error) {
-	if title == "" || start.IsZero() {
-		return Event{}, errors.New("title and starts_at are required")
+func (s *Service) CreateEvent(in EventInput) (Event, error) {
+	if err := in.Validate(); err != nil {
+		return Event{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.createLocked(title, location, note, start, end, "api")
+	e := s.createLocked(in, "api")
 	s.saveLocked()
 	return e, nil
 }
 
-func (s *Service) createLocked(title, location, note string, start, end time.Time, actor string) Event {
+func (s *Service) createLocked(in EventInput, actor string) Event {
 	e := Event{
-		ID:        NewID("ev"),
-		Title:     title,
-		Location:  location,
-		Note:      note,
-		StartsAt:  start,
-		EndsAt:    end,
-		Status:    StatusScheduled,
-		CreatedAt: s.now(),
+		ID:            NewID("ev"),
+		Title:         in.Title,
+		Location:      in.Location,
+		Note:          in.Note,
+		StartsAt:      in.StartsAt,
+		EndsAt:        in.EndsAt,
+		IfUnconfirmed: in.IfUnconfirmed,
+		Status:        StatusScheduled,
+		CreatedAt:     s.now(),
 	}
 	s.state.Events = append(s.state.Events, e)
-	s.auditLocked("event.created", map[string]any{"event_id": e.ID, "title": title, "starts_at": start, "actor": actor})
+	s.auditLocked("event.created", map[string]any{"event_id": e.ID, "title": in.Title, "starts_at": in.StartsAt, "actor": actor})
 	s.fireWebhooksLocked("event.created", e)
 	return e
+}
+
+// ReinstateEvent withdraws a cancellation — like cancelling, it is a
+// propagation transaction, and it restarts the confirmation cycle.
+func (s *Service) ReinstateEvent(eventID, actor string) (Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.state.Event(eventID)
+	if e == nil {
+		return Event{}, ErrNotFound
+	}
+	if e.Status != StatusCancelled {
+		return *e, errors.New("event is not cancelled")
+	}
+	e.Status = StatusScheduled
+	e.CancelReason = ""
+	e.CancelledAt = time.Time{}
+	e.Seq++
+	e.ReminderSentAt = time.Time{}
+	e.DeadlineFiredAt = time.Time{}
+	s.auditLocked("event.reinstated", map[string]any{"event_id": eventID, "actor": actor})
+	subject := "REINSTATED: " + e.Title
+	body := fmt.Sprintf("%s on %s takes place after all — the cancellation is withdrawn.",
+		e.Title, e.StartsAt.Format(timeFmt))
+	s.fanOutLocked(e, "reinstated", subject, body)
+	s.fireWebhooksLocked("event.reinstated", *e)
+	s.saveLocked()
+	return *e, nil
 }
 
 func (s *Service) ConfirmEvent(eventID, personID, via string) (Event, error) {
@@ -472,6 +502,32 @@ func (s *Service) lookupLinkLocked(token string) (*ActionLink, *Event, *Person, 
 	return nil, nil, nil, ErrNotFound
 }
 
+// ProposeMoveViaLink files a move proposal from an action-link holder.
+// Deliberately trust-independent: a proposal never applies by itself, so
+// even respond-level people may counter a cancellation with a new time.
+func (s *Service) ProposeMoveViaLink(token string, start, end time.Time, note string) (Proposal, error) {
+	if start.IsZero() {
+		return Proposal{}, errors.New("starts_at is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, e, p, err := s.lookupLinkLocked(token)
+	if err != nil {
+		return Proposal{}, err
+	}
+	pr := Proposal{
+		ID: NewID("pr"), PersonID: p.ID, Kind: "move", EventID: e.ID,
+		StartsAt: start, EndsAt: end, Note: note, CreatedAt: s.now(),
+	}
+	s.state.Proposals = append(s.state.Proposals, pr)
+	s.auditLocked("proposal.created", map[string]any{"proposal_id": pr.ID, "person_id": p.ID, "kind": "move", "event_id": e.ID, "via": "link"})
+	s.fireWebhooksLocked("proposal.created", pr)
+	s.notifyAdminLocked("Proposal from "+p.Name,
+		fmt.Sprintf("%s proposes to move %q to %s.", p.Name, e.Title, start.Format(timeFmt)))
+	s.saveLocked()
+	return pr, nil
+}
+
 // ApplyAction performs the link's action. Only ever called on POST — a GET
 // must never mutate, because mail scanners prefetch links.
 func (s *Service) ApplyAction(token string) (ActionView, error) {
@@ -590,6 +646,22 @@ func (s *Service) PortalSubmit(token, kind, eventID, title, note string, start, 
 	if p == nil {
 		return false, ErrNotFound
 	}
+	// Both trust paths validate the same way; a proposal with no title or
+	// time would just waste the admin's attention.
+	switch kind {
+	case "create":
+		in := EventInput{Title: title, Note: note, StartsAt: start, EndsAt: end}
+		if err := in.Validate(); err != nil {
+			return false, err
+		}
+	case "move":
+		if start.IsZero() {
+			return false, errors.New("starts_at is required for a move")
+		}
+	case "cancel":
+	default:
+		return false, fmt.Errorf("unknown kind %q", kind)
+	}
 	switch p.Trust {
 	case TrustDirect:
 		switch kind {
@@ -598,10 +670,8 @@ func (s *Service) PortalSubmit(token, kind, eventID, title, note string, start, 
 		case "move":
 			_, err = s.moveLocked(eventID, start, end, note, p.ID)
 		case "create":
-			e := s.createLocked(title, "", note, start, end, p.ID)
+			e := s.createLocked(EventInput{Title: title, Note: note, StartsAt: start, EndsAt: end}, p.ID)
 			s.state.Assignments = append(s.state.Assignments, Assignment{EventID: e.ID, PersonID: p.ID})
-		default:
-			err = fmt.Errorf("unknown kind %q", kind)
 		}
 		if err == nil {
 			s.saveLocked()
@@ -650,7 +720,7 @@ func (s *Service) DecideProposal(id string, accept bool) (Proposal, error) {
 		case "move":
 			_, err = s.moveLocked(pr.EventID, pr.StartsAt, pr.EndsAt, pr.Note, pr.PersonID)
 		case "create":
-			e := s.createLocked(pr.Title, "", pr.Note, pr.StartsAt, pr.EndsAt, pr.PersonID)
+			e := s.createLocked(EventInput{Title: pr.Title, Note: pr.Note, StartsAt: pr.StartsAt, EndsAt: pr.EndsAt}, pr.PersonID)
 			s.state.Assignments = append(s.state.Assignments, Assignment{EventID: e.ID, PersonID: pr.PersonID})
 		}
 	}
@@ -750,7 +820,8 @@ func (s *Service) Propagation(eventID string) (PropagationStatus, error) {
 	}
 	ps := PropagationStatus{EventID: eventID}
 	for _, o := range s.state.Outbox {
-		if o.EventID != eventID || (o.Purpose != "cancellation" && o.Purpose != "moved") {
+		if o.EventID != eventID ||
+			(o.Purpose != "cancellation" && o.Purpose != "moved" && o.Purpose != "reinstated") {
 			continue
 		}
 		ps.Total++
@@ -814,10 +885,17 @@ func (s *Service) tickRemindersLocked(now time.Time) bool {
 				continue
 			}
 			for _, ch := range p.Channels {
-				s.enqueueLocked(OutboxItem{
+				item := OutboxItem{
 					EventID: e.ID, PersonID: p.ID, Purpose: "reminder", Kind: ch.Kind, To: ch.To,
 					Subject: "Please confirm: " + e.Title, Body: body,
-				})
+				}
+				// Channels with inline buttons get one-tap callbacks; the
+				// body links stay as fallback for forwarded/old clients.
+				item.Buttons = []Button{
+					{Label: "✅ Takes place", Data: cTok},
+					{Label: "❌ Cancel event", Data: xTok},
+				}
+				s.enqueueLocked(item)
 			}
 		}
 		e.ReminderSentAt = now
@@ -841,9 +919,18 @@ func (s *Service) tickDeadlinesLocked(now time.Time) bool {
 		e.DeadlineFiredAt = now
 		s.auditLocked("deadline.passed", map[string]any{"event_id": e.ID})
 		s.fireWebhooksLocked("deadline.passed", *e)
-		s.notifyAdminLocked("No response: "+e.Title,
-			fmt.Sprintf("%s on %s is still unconfirmed and the response deadline has passed.",
-				e.Title, e.StartsAt.Format(timeFmt)))
+		if e.IfUnconfirmed == "cancel" {
+			// Dead-man-switch: silence means the event does not happen —
+			// and the cancellation propagates like any other.
+			s.cancelLocked(e.ID, "", "auto-cancelled: unconfirmed by deadline", "deadline")
+			s.notifyAdminLocked("Auto-cancelled: "+e.Title,
+				fmt.Sprintf("%s on %s was unconfirmed by its deadline and has been auto-cancelled (dead-man-switch). Reinstate if wrong.",
+					e.Title, e.StartsAt.Format(timeFmt)))
+		} else {
+			s.notifyAdminLocked("No response: "+e.Title,
+				fmt.Sprintf("%s on %s is still unconfirmed and the response deadline has passed.",
+					e.Title, e.StartsAt.Format(timeFmt)))
+		}
 		changed = true
 	}
 	return changed
@@ -867,7 +954,7 @@ func (s *Service) tickOutboxLocked(now time.Time) bool {
 		if o.Attempts >= s.cfg.MaxAttempts || now.Before(o.NextAttempt) {
 			continue
 		}
-		err := s.notify.Send(o.Kind, o.To, Message{Subject: o.Subject, Body: o.Body, Headers: o.Headers})
+		err := s.notify.Send(o.Kind, o.To, Message{Subject: o.Subject, Body: o.Body, Buttons: o.Buttons, Headers: o.Headers})
 		o.Attempts++
 		changed = true
 		if err == nil {
@@ -950,4 +1037,39 @@ func (s *Service) Responses(eventID string) []Response {
 
 func (s *Service) Audit(limit int) ([]AuditEntry, error) {
 	return s.store.ReadAudit(limit)
+}
+
+// OutboxItems lists outbound messages, optionally only undelivered ones.
+func (s *Service) OutboxItems(pendingOnly bool) []OutboxItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []OutboxItem
+	for _, o := range s.state.Outbox {
+		if pendingOnly && o.Delivered() {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out
+}
+
+// RetryOutbox re-arms a failed or stuck item; the next tick attempts it.
+func (s *Service) RetryOutbox(id string) (OutboxItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Outbox {
+		o := &s.state.Outbox[i]
+		if o.ID != id {
+			continue
+		}
+		if o.Delivered() {
+			return *o, errors.New("already delivered — nothing to retry")
+		}
+		o.Attempts = 0
+		o.NextAttempt = s.now()
+		s.auditLocked("outbox.retry", map[string]any{"outbox_id": id})
+		s.saveLocked()
+		return *o, nil
+	}
+	return OutboxItem{}, ErrNotFound
 }

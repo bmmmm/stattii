@@ -71,7 +71,10 @@ func newTestService(t *testing.T, fake *fakeNotifier) (*Service, *time.Time) {
 func mustEvent(t *testing.T, svc *Service, startIn time.Duration) Event {
 	t.Helper()
 	start := svc.now().Add(startIn)
-	e, err := svc.CreateEvent("Tuesday Session", "Hall 3", "", start, start.Add(2*time.Hour))
+	e, err := svc.CreateEvent(EventInput{
+		Title: "Tuesday Session", Location: "Hall 3",
+		StartsAt: start, EndsAt: start.Add(2 * time.Hour),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

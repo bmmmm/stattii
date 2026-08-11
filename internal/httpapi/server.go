@@ -41,6 +41,7 @@ func (s *Server) Handler() http.Handler {
 	// Public, rate-limited. GET never mutates — mail scanners prefetch links.
 	mux.HandleFunc("GET /a/{token}", s.public(s.actionPage))
 	mux.HandleFunc("POST /a/{token}", s.public(s.actionApply))
+	mux.HandleFunc("POST /a/{token}/propose", s.public(s.actionPropose))
 	mux.HandleFunc("GET /p/{token}", s.public(s.portalPage))
 	mux.HandleFunc("POST /p/{token}/respond", s.public(s.portalRespond))
 	mux.HandleFunc("POST /p/{token}/submit", s.public(s.portalSubmit))
@@ -57,6 +58,9 @@ func (s *Server) Handler() http.Handler {
 		"POST /api/v1/events/{id}/confirm":    s.confirmEvent,
 		"POST /api/v1/events/{id}/cancel":     s.cancelEvent,
 		"POST /api/v1/events/{id}/move":       s.moveEvent,
+		"POST /api/v1/events/{id}/reinstate":  s.reinstateEvent,
+		"GET /api/v1/outbox":                  s.listOutbox,
+		"POST /api/v1/outbox/{id}/retry":      s.retryOutbox,
 		"POST /api/v1/events/{id}/links":      s.makeLinks,
 		"GET /api/v1/events/{id}/responses":   s.eventResponses,
 		"GET /api/v1/events/{id}/propagation": s.propagation,
@@ -128,6 +132,32 @@ func (s *Server) actionApply(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "action", actionData{View: v, Token: r.PathValue("token"), Done: true, Conflict: errors.Is(err, core.ErrCancelled)})
 }
 
+func (s *Server) actionPropose(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	start, err := time.ParseInLocation("2006-01-02T15:04", r.FormValue("starts_at"), time.Local)
+	if err != nil {
+		s.renderError(w, errors.New("invalid start time"))
+		return
+	}
+	var end time.Time
+	if v := r.FormValue("ends_at"); v != "" {
+		if end, err = time.ParseInLocation("2006-01-02T15:04", v, time.Local); err != nil {
+			s.renderError(w, errors.New("invalid end time"))
+			return
+		}
+	}
+	if _, err := s.svc.ProposeMoveViaLink(token, start, end, r.FormValue("note")); err != nil {
+		s.renderError(w, err)
+		return
+	}
+	v, err := s.svc.ResolveAction(token)
+	if err != nil {
+		s.renderError(w, err)
+		return
+	}
+	s.render(w, "action", actionData{View: v, Token: token, Proposed: true})
+}
+
 func (s *Server) portalPage(w http.ResponseWriter, r *http.Request) {
 	v, err := s.svc.Portal(r.PathValue("token"))
 	if err != nil {
@@ -186,12 +216,13 @@ func (s *Server) feed(w http.ResponseWriter, _ *http.Request) {
 // ---- admin API ------------------------------------------------------------
 
 type eventReq struct {
-	Title    string    `json:"title"`
-	Location string    `json:"location"`
-	Note     string    `json:"note"`
-	Reason   string    `json:"reason"`
-	StartsAt time.Time `json:"starts_at"`
-	EndsAt   time.Time `json:"ends_at"`
+	Title         string    `json:"title"`
+	Location      string    `json:"location"`
+	Note          string    `json:"note"`
+	Reason        string    `json:"reason"`
+	StartsAt      time.Time `json:"starts_at"`
+	EndsAt        time.Time `json:"ends_at"`
+	IfUnconfirmed string    `json:"if_unconfirmed"`
 }
 
 func (s *Server) listEvents(w http.ResponseWriter, _ *http.Request) {
@@ -203,8 +234,25 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) {
 		return
 	}
-	e, err := s.svc.CreateEvent(in.Title, in.Location, in.Note, in.StartsAt, in.EndsAt)
+	e, err := s.svc.CreateEvent(core.EventInput{
+		Title: in.Title, Location: in.Location, Note: in.Note,
+		StartsAt: in.StartsAt, EndsAt: in.EndsAt, IfUnconfirmed: in.IfUnconfirmed,
+	})
 	respond(w, e, err, http.StatusCreated)
+}
+
+func (s *Server) reinstateEvent(w http.ResponseWriter, r *http.Request) {
+	e, err := s.svc.ReinstateEvent(r.PathValue("id"), "api")
+	respond(w, e, err, http.StatusOK)
+}
+
+func (s *Server) listOutbox(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.OutboxItems(r.URL.Query().Get("pending") == "1"))
+}
+
+func (s *Server) retryOutbox(w http.ResponseWriter, r *http.Request) {
+	o, err := s.svc.RetryOutbox(r.PathValue("id"))
+	respond(w, o, err, http.StatusOK)
 }
 
 func (s *Server) getEvent(w http.ResponseWriter, r *http.Request) {

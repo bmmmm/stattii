@@ -36,11 +36,25 @@ func (t *Telegram) Send(to string, m core.Message) error {
 	if m.Subject != "" {
 		text = m.Subject + "\n\n" + m.Body
 	}
-	payload, err := json.Marshal(map[string]any{
+	req := map[string]any{
 		"chat_id":                  to,
 		"text":                     text,
 		"disable_web_page_preview": true,
-	})
+	}
+	if len(m.Buttons) > 0 {
+		var row []map[string]string
+		for _, b := range m.Buttons {
+			btn := map[string]string{"text": b.Label}
+			if b.Data != "" {
+				btn["callback_data"] = b.Data
+			} else {
+				btn["url"] = b.URL
+			}
+			row = append(row, btn)
+		}
+		req["reply_markup"] = map[string]any{"inline_keyboard": [][]map[string]string{row}}
+	}
+	payload, err := json.Marshal(req)
 	if err != nil {
 		return err
 	}

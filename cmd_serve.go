@@ -84,6 +84,22 @@ func cmdServe(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go svc.RunScheduler(ctx, *tickEvery)
+	if tgToken := os.Getenv("STATTII_TELEGRAM_TOKEN"); tgToken != "" {
+		poller := &channel.TelegramPoller{
+			Token: tgToken,
+			Apply: func(token string) (string, error) {
+				v, err := svc.ApplyAction(token)
+				if err != nil {
+					return "", err
+				}
+				if v.Action == core.ActionConfirm {
+					return "Recorded: the event takes place.", nil
+				}
+				return "Recorded: the event is cancelled — everyone is being notified.", nil
+			},
+		}
+		go poller.Run(ctx)
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
