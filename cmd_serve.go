@@ -22,6 +22,7 @@ import (
 
 func cmdServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.json", "config file (JSON with // comment lines; see config.example.json)")
 	listen := fs.String("listen", ":8788", "listen address")
 	dataDir := fs.String("data", "./data", "data directory (state.json, audit.jsonl, admin-token)")
 	baseURL := fs.String("base-url", "", "public base URL used in links (default http://localhost:<port>)")
@@ -31,6 +32,46 @@ func cmdServe(args []string) {
 	escalateAfter := fs.Duration("escalate-after", 10*time.Minute, "undelivered outbox items page the admin after this long")
 	tickEvery := fs.Duration("tick", time.Minute, "scheduler interval")
 	fs.Parse(args)
+
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	fc, err := loadFileConfig(*cfgPath, set["config"])
+	if err != nil {
+		log.Fatalf("stattii: %v", err)
+	}
+	parseDur := func(field, v string) time.Duration {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			log.Fatalf("stattii: config %s: %s = %q is not a duration (use forms like 48h, 30m)", *cfgPath, field, v)
+		}
+		return d
+	}
+	// Explicit flags win; otherwise the config file fills the gaps.
+	if !set["listen"] && fc.Listen != "" {
+		*listen = fc.Listen
+	}
+	if !set["data"] && fc.DataDir != "" {
+		*dataDir = fc.DataDir
+	}
+	if !set["base-url"] && fc.BaseURL != "" {
+		*baseURL = fc.BaseURL
+	}
+	if !set["cal-name"] && fc.CalName != "" {
+		*calName = fc.CalName
+	}
+	if !set["reminder-lead"] && fc.ReminderLead != "" {
+		*reminderLead = parseDur("reminder_lead", fc.ReminderLead)
+	}
+	if !set["deadline-lead"] && fc.DeadlineLead != "" {
+		*deadlineLead = parseDur("deadline_lead", fc.DeadlineLead)
+	}
+	if !set["escalate-after"] && fc.EscalateAfter != "" {
+		*escalateAfter = parseDur("escalate_after", fc.EscalateAfter)
+	}
+	if !set["tick"] && fc.Tick != "" {
+		*tickEvery = parseDur("tick", fc.Tick)
+	}
 
 	if *baseURL == "" {
 		addr := *listen
@@ -50,18 +91,19 @@ func cmdServe(args []string) {
 		ReminderLead:  *reminderLead,
 		DeadlineLead:  *deadlineLead,
 		EscalateAfter: *escalateAfter,
-		AdminNotify:   parseAdminNotify(os.Getenv("STATTII_ADMIN_NOTIFY")),
+		AdminNotify:   parseAdminNotify(firstOf(fc.AdminNotify, os.Getenv("STATTII_ADMIN_NOTIFY"))),
 	}
 
+	tgToken := fc.telegramToken()
 	registry := channel.NewRegistry(
 		&channel.Email{
-			Host: os.Getenv("STATTII_SMTP_HOST"),
-			Port: os.Getenv("STATTII_SMTP_PORT"),
-			User: os.Getenv("STATTII_SMTP_USER"),
-			Pass: os.Getenv("STATTII_SMTP_PASS"),
-			From: os.Getenv("STATTII_SMTP_FROM"),
+			Host: firstOf(fc.Email.SMTPHost, os.Getenv("STATTII_SMTP_HOST")),
+			Port: firstOf(fc.Email.SMTPPort, os.Getenv("STATTII_SMTP_PORT")),
+			User: firstOf(fc.Email.SMTPUser, os.Getenv("STATTII_SMTP_USER")),
+			Pass: fc.smtpPass(),
+			From: firstOf(fc.Email.From, os.Getenv("STATTII_SMTP_FROM")),
 		},
-		&channel.Telegram{Token: os.Getenv("STATTII_TELEGRAM_TOKEN")},
+		&channel.Telegram{Token: tgToken},
 		&channel.Webhook{},
 	)
 
@@ -84,7 +126,7 @@ func cmdServe(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go svc.RunScheduler(ctx, *tickEvery)
-	if tgToken := os.Getenv("STATTII_TELEGRAM_TOKEN"); tgToken != "" {
+	if tgToken != "" {
 		poller := &channel.TelegramPoller{
 			Token: tgToken,
 			Apply: func(token string) (string, error) {
@@ -143,7 +185,7 @@ func parseAdminNotify(spec string) *core.Address {
 	}
 	kind, to, ok := strings.Cut(spec, ":")
 	if !ok || kind == "" || to == "" {
-		log.Printf("stattii: ignoring malformed STATTII_ADMIN_NOTIFY %q (want kind:address, e.g. telegram:12345)", spec)
+		log.Printf("stattii: ignoring malformed admin_notify %q (want kind:address, e.g. telegram:12345)", spec)
 		return nil
 	}
 	return &core.Address{Kind: kind, To: to}

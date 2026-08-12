@@ -1,0 +1,29 @@
+// Email + Telegram blank — copy to ../config.json.
+//
+// Telegram setup:
+//  1. Create a bot: message @BotFather, /newbot, copy the token.
+//  2. Each person must message the bot once (bots cannot start chats).
+//  3. Find a chat id: send a message to the bot, then open
+//     https://api.telegram.org/bot<TOKEN>/getUpdates and read
+//     result[].message.chat.id — that number is the person's channel
+//     address ("kind": "telegram", "to": "<chat-id>").
+// Reminders then carry one-tap ✅/❌ inline buttons; the server long-polls
+// the Bot API, no public webhook needed.
+{
+  "base_url": "https://events.example.org",
+  "admin_notify": "telegram:123456789",
+  "email": {
+    "smtp_host": "smtp.example.org",
+    "smtp_port": "587",
+    "smtp_user": "events@example.org",
+    "smtp_pass": "",
+    "smtp_pass_env": "STATTII_SMTP_PASS",
+    "from": "events@example.org"
+  },
+  "telegram": {
+    // Token from @BotFather here (gitignored file, chmod 600) or via the
+    // env var below.
+    "token": "",
+    "token_env": "STATTII_TELEGRAM_TOKEN"
+  }
+}

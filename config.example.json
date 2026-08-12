@@ -1,0 +1,57 @@
+// stattii configuration — the full reference.
+//
+// Copy to config.json (gitignored, chmod 600) and fill in what you need,
+// or start from a ready-made blank in examples/. Lines starting with //
+// are comments; unknown keys are rejected so typos fail loudly.
+// Precedence: explicit `serve` flags > this file > STATTII_* env vars.
+{
+  // Where the HTTP server listens.
+  "listen": ":8788",
+
+  // Public base URL used in every action/portal link — set this in
+  // production, recipients click these.
+  "base_url": "https://events.example.org",
+
+  // Calendar name shown by ICS subscribers.
+  "cal_name": "stattii",
+
+  // Directory for state.json, audit.jsonl and the generated admin-token.
+  "data_dir": "./data",
+
+  // How long before an event the confirm/cancel ask goes out.
+  "reminder_lead": "48h",
+
+  // Unanswered this close to start fires deadline.passed (and the
+  // dead-man-switch for events created with if_unconfirmed=cancel).
+  "deadline_lead": "24h",
+
+  // Undelivered messages page the admin after this long.
+  "escalate_after": "10m",
+
+  // Scheduler interval.
+  "tick": "1m",
+
+  // Where escalations and proposals go: "email:you@example.org" or
+  // "telegram:<chat-id>".
+  "admin_notify": "email:you@example.org",
+
+  // Outbound email (the primary channel). See examples/config.gmail.json
+  // and examples/config.generic-smtp.json for filled-in variants.
+  "email": {
+    "smtp_host": "smtp.example.org",
+    "smtp_port": "587",
+    "smtp_user": "events@example.org",
+    // Either the credential itself (file is gitignored, keep chmod 600) …
+    "smtp_pass": "",
+    // … or leave smtp_pass empty and set this environment variable.
+    "smtp_pass_env": "STATTII_SMTP_PASS",
+    "from": "events@example.org"
+  },
+
+  // Telegram bot (optional; reminders get one-tap inline buttons).
+  // Leave token empty to disable — see examples/config.telegram.json.
+  "telegram": {
+    "token": "",
+    "token_env": "STATTII_TELEGRAM_TOKEN"
+  }
+}

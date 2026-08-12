@@ -1,0 +1,21 @@
+// Generic mail provider / own mail server blank — copy to ../config.json.
+//
+// Works for mailbox.org, Posteo, Fastmail, your own Postfix/mailcow, …
+// You need: the SMTP submission host (usually port 587 with STARTTLS),
+// a login, and the sender address the account may use.
+{
+  "base_url": "https://events.example.org",
+  "admin_notify": "email:you@example.org",
+  "email": {
+    // Submission host of your provider, e.g. smtp.mailbox.org.
+    "smtp_host": "smtp.example.org",
+    "smtp_port": "587",
+    "smtp_user": "events@example.org",
+    // Credential here (gitignored file, chmod 600) or via env var below.
+    "smtp_pass": "",
+    "smtp_pass_env": "STATTII_SMTP_PASS",
+    // Must be an address the account is allowed to send as, or your
+    // provider will reject or spam-folder the mails.
+    "from": "events@example.org"
+  }
+}

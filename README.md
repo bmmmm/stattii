@@ -85,10 +85,25 @@ stands in front of a locked door".
 
 ## Configuration
 
-Flags on `serve`: `--listen`, `--data`, `--base-url`, `--cal-name`,
-`--reminder-lead`, `--deadline-lead`, `--escalate-after`, `--tick`.
+Everything lives in the project folder. Copy `config.example.json` to
+`config.json` (gitignored — keep it `chmod 600`), or start from a
+ready-made blank in `examples/`:
 
-Environment (secrets never travel as flags):
+- `examples/config.gmail.json` — Gmail with an app password
+- `examples/config.generic-smtp.json` — any mail provider or own server
+- `examples/config.telegram.json` — email + Telegram bot (one-tap buttons)
+
+Config files are JSON with full-line `//` comments. Unknown keys are
+rejected loudly, so typos cannot be silently ignored. Precedence:
+explicit `serve` flags > `config.json` > `STATTII_*` environment variables.
+Credentials go either directly into the gitignored file or stay in the
+environment via `smtp_pass_env` / `token_env` — your choice.
+
+Flags on `serve`: `--config`, `--listen`, `--data`, `--base-url`,
+`--cal-name`, `--reminder-lead`, `--deadline-lead`, `--escalate-after`,
+`--tick`.
+
+Environment fallbacks (all optional once `config.json` exists):
 
 | Variable | Purpose |
 |----------|---------|

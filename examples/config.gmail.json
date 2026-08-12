@@ -1,0 +1,20 @@
+// Gmail blank — copy to ../config.json, replace you@gmail.com and the
+// app password, done.
+//
+// Gmail SMTP requires an *app password* (your normal password will not
+// work): enable 2-step verification, then create one at
+// https://myaccount.google.com/apppasswords (16 characters, no spaces).
+{
+  "base_url": "https://events.example.org",
+  "admin_notify": "email:you@gmail.com",
+  "email": {
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": "587",
+    "smtp_user": "you@gmail.com",
+    // Paste the 16-character app password here (file is gitignored,
+    // chmod 600) — or leave empty and export STATTII_SMTP_PASS instead.
+    "smtp_pass": "",
+    "smtp_pass_env": "STATTII_SMTP_PASS",
+    "from": "you@gmail.com"
+  }
+}
