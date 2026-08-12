@@ -147,6 +147,14 @@ func TestAdminAPIContract(t *testing.T) {
 	step(200, "POST", "/api/v1/proposals/"+props[0].ID+"/decide", `{"accept":false}`)
 	step(404, "POST", "/api/v1/proposals/pr_nope/decide", `{"accept":true}`)
 
+	// calendar: no source configured is a loud 400; series assignment
+	// works even before the first import (applies on future fetches).
+	step(400, "POST", "/api/v1/calendar/fetch", "")
+	step(200, "POST", "/api/v1/series-assignments",
+		`{"source_uid":"some-series","person_id":"`+created.Person.ID+`","role":"host"}`)
+	step(404, "POST", "/api/v1/series-assignments",
+		`{"source_uid":"some-series","person_id":"pe_nope"}`)
+
 	// audit + overview
 	step(200, "GET", "/api/v1/audit?limit=5", "")
 	var ov core.Overview

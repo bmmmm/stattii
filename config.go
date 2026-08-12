@@ -34,7 +34,14 @@ type fileConfig struct {
 	// TCP peer matches, the rate-limit client IP comes from X-Forwarded-For
 	// (rightmost hop not in this list) — otherwise everyone behind the proxy
 	// shares one bucket. Empty = direct exposure, header ignored.
-	TrustedProxies string         `json:"trusted_proxies"`
+	TrustedProxies string `json:"trusted_proxies"`
+	// Foreign ICS feed to import events from (operator data — never in
+	// the repo). webcal:// is rewritten to https://. Fetch is manual:
+	// POST /api/v1/calendar/fetch, the panel button, or `stattii
+	// calendar fetch`.
+	CalendarSource string `json:"calendar_source"`
+	// How far ahead recurring series are materialised (Go duration).
+	CalendarWindow string         `json:"calendar_window"`
 	Email          emailConfig    `json:"email"`
 	Telegram       telegramConfig `json:"telegram"`
 }

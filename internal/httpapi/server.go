@@ -123,6 +123,8 @@ func (s *Server) AdminHandler() http.Handler {
 		"GET /api/v1/audit":                     s.audit,
 		"GET /api/v1/overview":                  s.overview,
 		"POST /api/v1/tick":                     s.tick,
+		"POST /api/v1/calendar/fetch":           s.calendarFetch,
+		"POST /api/v1/series-assignments":       s.createSeriesAssignment,
 	}
 	for pattern, h := range api {
 		mux.HandleFunc(pattern, s.auth(h))
@@ -498,6 +500,24 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.svc.Overview())
+}
+
+func (s *Server) calendarFetch(w http.ResponseWriter, r *http.Request) {
+	rep, err := s.svc.FetchCalendar(r.Context())
+	respond(w, rep, err, http.StatusOK)
+}
+
+func (s *Server) createSeriesAssignment(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		SourceUID string `json:"source_uid"`
+		PersonID  string `json:"person_id"`
+		Role      string `json:"role"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	n, err := s.svc.AssignSeries(in.SourceUID, in.PersonID, in.Role)
+	respond(w, map[string]any{"status": "assigned", "events": n}, err, http.StatusOK)
 }
 
 func (s *Server) tick(w http.ResponseWriter, _ *http.Request) {

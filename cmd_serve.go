@@ -107,11 +107,15 @@ func cmdServe(args []string) {
 	}
 
 	cfg := core.Config{
-		BaseURL:       *baseURL,
-		ReminderLead:  *reminderLead,
-		DeadlineLead:  *deadlineLead,
-		EscalateAfter: *escalateAfter,
-		AdminNotify:   parseAdminNotify(firstOf(fc.AdminNotify, os.Getenv("STATTII_ADMIN_NOTIFY"))),
+		BaseURL:        *baseURL,
+		ReminderLead:   *reminderLead,
+		DeadlineLead:   *deadlineLead,
+		EscalateAfter:  *escalateAfter,
+		AdminNotify:    parseAdminNotify(firstOf(fc.AdminNotify, os.Getenv("STATTII_ADMIN_NOTIFY"))),
+		CalendarSource: firstOf(fc.CalendarSource, os.Getenv("STATTII_CALENDAR_SOURCE")),
+	}
+	if fc.CalendarWindow != "" {
+		cfg.CalendarWindow = parseDur("calendar_window", fc.CalendarWindow)
 	}
 
 	tgToken := fc.telegramToken()

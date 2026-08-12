@@ -25,9 +25,13 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
 2. ~~**Email go-live**~~ — done 2026-08-12: Gmail app password, reminder +
    cancellation round-trip delivered cross-provider (Gmail → brtsz.de),
    confirm-via-link proven end to end. Spam placement: inbox.
-3. **Real data**: enter the actual people (+ trust levels) and the real
-   event series via CLI/API; define broadcast targets (mailing list,
-   website webhook) for the propagation fan-out.
+3. **Real data**: ~~event series~~ — since 2026-08-12 the events come
+   from the calendar source (`calendar_source`, manual fetch via panel
+   button / `stattii calendar fetch` / API): ICS import with recurrence
+   expansion into a 60-day window, auto-move with fan-out on source time
+   changes, vanished-is-reported-never-cancelled. Remaining: enter the
+   actual people (+ trust levels), set series responsibles
+   (`series-assign` / panel checkbox), define broadcast targets.
 4. ~~**First live cycle**~~ — observed 2026-08-12 with test data:
    reminder → click → confirm → feed, then cancel → propagation complete
    (delivered 1/1). Repeat once with real data as part of step 3.

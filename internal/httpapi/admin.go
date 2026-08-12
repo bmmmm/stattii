@@ -35,6 +35,7 @@ func (s *Server) registerAdminUI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/people", s.adminAuth(s.adminPeople))
 	mux.HandleFunc("POST /admin/people", s.adminAuth(s.adminPeopleAdd))
 	mux.HandleFunc("POST /admin/people/{id}/test", s.adminAuth(s.adminPeopleTest))
+	mux.HandleFunc("POST /admin/calendar/fetch", s.adminAuth(s.adminCalendarFetch))
 	mux.HandleFunc("POST /admin/proposals/{id}", s.adminAuth(s.adminProposalDecide))
 	mux.HandleFunc("POST /admin/outbox/{id}/retry", s.adminAuth(s.adminOutboxRetry))
 }
@@ -138,17 +139,20 @@ type adminRecentMsg struct {
 }
 
 type adminOverviewData struct {
-	Ov        core.Overview
-	Hidden    int // past events not shown (use ?all=1)
-	All       bool
-	Proposals []core.Proposal   // open only
-	Pending   []core.OutboxItem // undelivered
-	People    []core.Person
-	Recent    []adminRecentMsg // last messages, newest first
+	Ov         core.Overview
+	Hidden     int // past events not shown (use ?all=1)
+	All        bool
+	Proposals  []core.Proposal   // open only
+	Pending    []core.OutboxItem // undelivered
+	People     []core.Person
+	Recent     []adminRecentMsg // last messages, newest first
+	Calendar   bool             // a source feed is configured
+	LastImport *core.ImportReport
 }
 
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
-	d := adminOverviewData{Ov: s.svc.Overview(), All: r.URL.Query().Get("all") == "1", People: s.svc.People()}
+	d := adminOverviewData{Ov: s.svc.Overview(), All: r.URL.Query().Get("all") == "1", People: s.svc.People(),
+		Calendar: s.svc.CalendarConfigured(), LastImport: s.svc.LastImport()}
 	if !d.All {
 		now := time.Now()
 		var keep []core.OverviewEvent
@@ -284,7 +288,26 @@ func (s *Server) adminEventMove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminEventAssign(w http.ResponseWriter, r *http.Request) {
+	// "series" assigns the whole imported series, not just this event.
+	if r.FormValue("series") == "1" {
+		e, err := s.svc.EventByID(r.PathValue("id"))
+		if err != nil || e.SourceUID == "" {
+			s.renderError(w, core.ErrNotFound)
+			return
+		}
+		_, err = s.svc.AssignSeries(e.SourceUID, r.FormValue("person_id"), r.FormValue("role"))
+		s.adminAct(w, r, err)
+		return
+	}
 	s.adminAct(w, r, s.svc.Assign(r.PathValue("id"), r.FormValue("person_id"), r.FormValue("role")))
+}
+
+func (s *Server) adminCalendarFetch(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.svc.FetchCalendar(r.Context()); err != nil {
+		s.renderError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
 func (s *Server) adminEventCreate(w http.ResponseWriter, r *http.Request) {

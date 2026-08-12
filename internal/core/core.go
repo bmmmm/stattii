@@ -48,6 +48,10 @@ type Event struct {
 	CancelledAt     time.Time `json:"cancelled_at"`
 	ReminderSentAt  time.Time `json:"reminder_sent_at"`
 	DeadlineFiredAt time.Time `json:"deadline_fired_at"`
+	// Set on events imported from the calendar source: the series UID
+	// and the stable per-occurrence key the sync matches on.
+	SourceUID string `json:"source_uid,omitempty"`
+	SourceKey string `json:"source_key,omitempty"`
 }
 
 // EventInput is the validated payload for creating an event.
@@ -193,6 +197,9 @@ type State struct {
 	Broadcasts  []Broadcast  `json:"broadcasts"`
 	Webhooks    []Webhook    `json:"webhooks"`
 	Outbox      []OutboxItem `json:"outbox"`
+	// Calendar import: per-series responsibles and the last fetch report.
+	SeriesAssignments []SeriesAssignment `json:"series_assignments,omitempty"`
+	LastImport        *ImportReport      `json:"last_import,omitempty"`
 }
 
 func (s *State) Event(id string) *Event {

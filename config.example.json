@@ -43,6 +43,14 @@
   // "telegram:<chat-id>".
   "admin_notify": "email:you@example.org",
 
+  // Foreign ICS calendar to import events from (Nextcloud public link,
+  // webcal:// or https://). Operator data — keep it out of any repo.
+  // Fetch is manual: the panel button, `stattii calendar fetch`, or
+  // POST /api/v1/calendar/fetch. Recurring series are expanded this far
+  // ahead (calendar_window, Go duration; default 1440h = 60 days).
+  "calendar_source": "",
+  "calendar_window": "1440h",
+
   // Reverse proxies in front of stattii (comma-separated CIDRs or IPs).
   // When the TCP peer matches, the rate limiter takes the client IP from
   // X-Forwarded-For (rightmost hop not in this list) — otherwise everyone

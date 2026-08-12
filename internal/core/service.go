@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -39,6 +40,10 @@ type Config struct {
 	MaxAttempts   int           // outbox attempts before an item counts as failed
 	EscalateAfter time.Duration // undelivered for this long => notify admin
 	AdminNotify   *Address      // where escalations and proposals go (optional)
+	// Calendar import (optional): the foreign ICS feed events come from,
+	// and how far ahead occurrences are materialised.
+	CalendarSource string
+	CalendarWindow time.Duration
 }
 
 func (c *Config) fill() {
@@ -57,18 +62,22 @@ func (c *Config) fill() {
 	if c.EscalateAfter == 0 {
 		c.EscalateAfter = 10 * time.Minute
 	}
+	if c.CalendarWindow == 0 {
+		c.CalendarWindow = 60 * 24 * time.Hour
+	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 }
 
 // Service owns the state: one mutex, mutations audit and persist themselves.
 type Service struct {
-	mu     sync.Mutex
-	store  Store
-	state  *State
-	cfg    Config
-	notify Notifier
-	now    func() time.Time
-	logf   func(format string, args ...any)
+	mu           sync.Mutex
+	store        Store
+	state        *State
+	cfg          Config
+	notify       Notifier
+	now          func() time.Time
+	logf         func(format string, args ...any)
+	calendarHTTP *http.Client // test override for calendar fetches
 }
 
 func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {
@@ -343,15 +352,22 @@ func (s *Service) Assign(eventID, personID, role string) error {
 	if s.state.Person(personID) == nil {
 		return fmt.Errorf("person %s: %w", personID, ErrNotFound)
 	}
+	if s.assignLocked(eventID, personID, role) {
+		s.saveLocked()
+	}
+	return nil
+}
+
+// assignLocked records an assignment; false means it already existed.
+func (s *Service) assignLocked(eventID, personID, role string) bool {
 	for _, a := range s.state.Assignments {
 		if a.EventID == eventID && a.PersonID == personID {
-			return nil // idempotent
+			return false // idempotent
 		}
 	}
 	s.state.Assignments = append(s.state.Assignments, Assignment{EventID: eventID, PersonID: personID, Role: role})
 	s.auditLocked("assigned", map[string]any{"event_id": eventID, "person_id": personID, "role": role})
-	s.saveLocked()
-	return nil
+	return true
 }
 
 func (s *Service) AddBroadcast(name, kind, to string) (Broadcast, error) {

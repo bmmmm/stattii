@@ -41,9 +41,20 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 <h1>stattii admin</h1>
 {{template "admin_nav"}}
 
-{{if or .Proposals .Pending}}
+{{if .Calendar}}
+<p><form method="post" action="/admin/calendar/fetch"><button class="yes" type="submit">Fetch calendar now</button></form>
+{{with .LastImport}}<span class="muted">last fetch {{.FetchedAt.Format "02 Jan 15:04"}} — {{.Created}} new · {{.Moved}} moved · {{.Updated}} updated · {{.Unchanged}} unchanged</span>{{end}}</p>
+{{end}}
+
+{{$imp := .LastImport}}
+{{if or .Proposals .Pending (and $imp (or $imp.Vanished $imp.Conflicts $imp.Skipped))}}
 <div class="card">
 <h2>Needs attention</h2>
+{{if $imp}}
+{{range $imp.Vanished}}<p class="bad">Gone from the calendar (NOT auto-cancelled — cancel it yourself if real): {{.}}</p>{{end}}
+{{range $imp.Conflicts}}<p class="bad">Import conflict: {{.}}</p>{{end}}
+{{range $imp.Skipped}}<p class="muted">Import skipped: {{.}}</p>{{end}}
+{{end}}
 {{range .Proposals}}
   <p>Proposal <strong>{{.Kind}}</strong>{{if .Title}} „{{.Title}}"{{end}}{{if .EventID}} for {{.EventID}}{{end}}
   {{if not .StartsAt.IsZero}} → {{.StartsAt.Format "Mon, 02 Jan 15:04"}}{{end}}
@@ -99,6 +110,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 
 <div class="card">
 {{template "event" .Ev.Event}}
+{{if .Ev.Event.SourceUID}}<p class="muted">↻ imported series occurrence</p>{{end}}
 {{if not .Tracks}}<p class="muted">nobody assigned — the reminder waits</p>{{end}}
 {{range .Tracks}}
   <p><strong>{{.A.Name}}</strong>{{if .A.Role}} ({{.A.Role}}){{end}} <span class="muted">· trust: {{.A.Trust}}</span></p>
@@ -133,6 +145,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
   <form method="post" action="/admin/event/{{.Ev.Event.ID}}/assign">
     <select name="person_id">{{range .People}}<option value="{{.ID}}">{{.Name}} ({{.Trust}})</option>{{end}}</select>
     <input name="role" placeholder="Role (optional)">
+    {{if .Ev.Event.SourceUID}}<label><input type="checkbox" name="series" value="1"> whole series (every imported occurrence, incl. future fetches)</label>{{end}}
     <button type="submit">Assign</button>
   </form>
 </details>

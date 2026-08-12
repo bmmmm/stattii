@@ -115,6 +115,20 @@ Environment fallbacks (all optional once `config.json` exists):
 | `STATTII_ADMIN_NOTIFY` | escalation target, `kind:address` |
 | `STATTII_URL`, `STATTII_TOKEN` | used by the CLI client |
 
+## Calendar source
+
+stattii can sit on top of an existing calendar: point `calendar_source`
+at a public ICS feed (Nextcloud public link, `webcal://` or `https://`)
+and trigger a fetch — the panel button, `stattii calendar fetch`, or
+`POST /api/v1/calendar/fetch`. Recurring series are expanded
+`calendar_window` (default 60 days) ahead; each occurrence becomes a
+stattii event keyed to its source, so refetches are idempotent. Source
+time changes run the full move transaction (fan-out included); events
+that disappear from the feed are reported but **never** auto-cancelled.
+Assign a responsible once per series (`stattii series-assign`, or the
+"whole series" checkbox in the panel) and every future occurrence
+inherits them — and their reminders.
+
 ## Admin surface
 
 Management is a **separate listener** (`--admin-listen` / `admin_listen`,

@@ -18,7 +18,8 @@ people stood in front of a locked door. That failure mode drives the design.
 | `internal/core` | domain types, JSON store (`state.json` atomic + `audit.jsonl` append-only), `Service` (every mutation audits + persists under one mutex), scheduler `Tick` |
 | `internal/channel` | `Sender` interface: email (SMTP), telegram (send + `getUpdates` poller for inline-button callbacks), webhook |
 | `internal/httpapi` | TWO muxes: public token surface (`/a/`, `/p/`, `/feed.ics`, rate limiter) and the admin listener (`/api/v1` behind bearer auth + `/admin` web UI behind cookie login) |
-| `internal/ics` | ICS feed generation only — parsing foreign feeds is out of scope |
+| `internal/ics` | outbound ICS feed generation |
+| `internal/icsimport` | inbound: parses the configured foreign feed + expands recurrence into a window (owner decision 2026-08-12 — import IS in scope now). The feed URL is operator data: host config only, never in the repo; test fixtures are synthetic |
 | root `package main` | `serve` + thin CLI client over the REST API; `config.go` loads `config.json` |
 
 ## Invariants — do not break
@@ -38,6 +39,12 @@ people stood in front of a locked door. That failure mode drives the design.
 8. **Management routes exist only on the admin listener.** `PublicHandler`
    carries the token surface and nothing else — never register `/api/v1`
    or `/admin` there. Guarded by `TestAdminAPIAbsentFromPublic`.
+9. **The calendar import never cancels.** A feed glitch must not send
+   cancellation mail: occurrences that disappear from the source are
+   reported (`import.vanished`, panel attention), the operator decides.
+   Time changes DO run the full move transaction (owner decision).
+10. **The source feed URL is user/project data** — config on the host,
+   never committed anywhere, and never baked into tests.
 
 ## Build & test
 

@@ -109,6 +109,22 @@ func cmdClient(args []string) error {
 	switch cmd {
 	case "overview":
 		return cmdOverview(rest)
+	case "calendar":
+		if len(rest) < 1 || rest[0] != "fetch" {
+			return fmt.Errorf("usage: stattii calendar fetch")
+		}
+		return api("POST", "/api/v1/calendar/fetch", nil)
+	case "series-assign":
+		if len(rest) < 2 {
+			return fmt.Errorf("usage: stattii series-assign <source-uid> <person-id> [role]")
+		}
+		role := ""
+		if len(rest) > 2 {
+			role = rest[2]
+		}
+		return api("POST", "/api/v1/series-assignments", map[string]string{
+			"source_uid": rest[0], "person_id": rest[1], "role": role,
+		})
 	case "event":
 		return cmdEvent(rest)
 	case "person":
