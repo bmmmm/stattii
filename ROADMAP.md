@@ -13,20 +13,24 @@
   loud on typos), ready-made blanks in `examples/` (Gmail, generic SMTP,
   Telegram), AGENTS.md.
 
-## Phase 2 — production go-live (next session)
+## Phase 2 — production go-live
 
 Focus decided 2026-08-12: **email + links first, Telegram last.**
 
-1. **Deploy** to the home infra: pick host (garage/nutc), reverse proxy +
-   TLS, real `base_url`, service unit / compose entry, backup of the data
-   dir (state.json + audit.jsonl are the whole world). → issue #2
-2. **Email go-live**: copy a blank from `examples/`, fill mail access,
-   send a real reminder round-trip to yourself; check spam placement
-   (SPF/DKIM of the sending account matter more than the code).
+1. ~~**Deploy**~~ — done 2026-08-12: garage, public at `https://stattii.6bm.de`
+   via the garage-wb Cloudflare Tunnel → Traefik (LE cert). Runs as
+   `stattii:local` built on garage by `~/servers/garage/scripts/
+   rebuild-stattii.sh`; compose + policy live in the servers repo. Data is a
+   bind mount under `~/docker/stattii/` (nightly restic sweep). → issue #2
+2. ~~**Email go-live**~~ — done 2026-08-12: Gmail app password, reminder +
+   cancellation round-trip delivered cross-provider (Gmail → brtsz.de),
+   confirm-via-link proven end to end.
 3. **Real data**: enter the actual people (+ trust levels) and the real
    event series via CLI/API; define broadcast targets (mailing list,
    website webhook) for the propagation fan-out.
-4. **First live cycle** observed end-to-end: reminder → click → feed/webhook.
+4. ~~**First live cycle**~~ — observed 2026-08-12 with test data:
+   reminder → click → confirm → feed, then cancel → propagation complete
+   (delivered 1/1). Repeat once with real data as part of step 3.
 5. **Telegram** (deliberately last): BotFather token, chat-id onboarding
    per person (see examples/config.telegram.json), verify one-tap buttons.
 
@@ -58,3 +62,17 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
 - Tests: `internal/channel` binds real listeners (`httptest.NewServer`) —
   needs a sandbox bypass locally, runs clean in CI. Prove new assertions
   can go red before trusting them (done for the GET-mutation guard).
+- **Behind a reverse proxy the limiter needs `trusted_proxies`** (found at
+  go-live): the rate-limit key was `RemoteAddr`, which behind Traefik is
+  always the proxy — every recipient would share one 30/min bucket. The
+  fix walks X-Forwarded-For right-to-left past trusted hops; direct
+  clients still cannot spoof it.
+- **Reminders wait for assignees** (found live): the scheduler ticked in
+  the seconds between event.created and the first assignment and burned
+  the one-shot reminder on zero recipients. The deadline pass deliberately
+  does NOT wait — an unstaffed `if_unconfirmed=cancel` event must still
+  auto-cancel.
+- **Gmail self-send is invisible**: SMTP-submitting from your own Gmail
+  address to itself lands only in Sent/All Mail, never the inbox — a
+  self-round-trip "did not arrive" is Gmail dedup, not a delivery failure.
+  Test deliverability cross-provider.

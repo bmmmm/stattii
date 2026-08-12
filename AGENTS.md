@@ -69,3 +69,10 @@ sandbox they may need a bypass; CI has no sandbox and is fine.
 
 Current phase, plan, and recorded learnings: [ROADMAP.md](ROADMAP.md).
 Actionable next work lives in Forgejo issues.
+
+**Production** (since 2026-08-12): `https://stattii.6bm.de` on garage —
+Cloudflare Tunnel → Traefik → `stattii:local`, rebuilt + redeployed by
+`~/servers/garage/scripts/rebuild-stattii.sh` (source must be clean and
+pushed). Operator config lives on the host at `~/docker/stattii/`
+(config.json + .env, never committed); state is bind-mounted there and
+covered by the nightly restic sweep.
