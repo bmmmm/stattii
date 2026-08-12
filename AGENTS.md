@@ -39,9 +39,17 @@ people stood in front of a locked door. That failure mode drives the design.
 ## Build & test
 
 ```sh
-export GOCACHE="$HOME/.cache/claudii/go-build" GOMODCACHE="$HOME/.cache/claudii/gomod" \
-       GOPROXY=direct GOSUMDB=off PATH="/opt/homebrew/bin:$PATH"   # sandbox caches
 gofmt -l . && go vet ./... && go test ./... && go build .
+```
+
+On the owner's machine the sandbox cache env (GOCACHE/GOMODCACHE/GOPROXY/GOSUMDB)
+comes from the untracked `.claude/settings.local.json` — no manual exports
+needed. Elsewhere (CI has no sandbox) plain `go` commands just work; if you
+hit a blocked-cache error in a sandboxed shell, set:
+
+```sh
+export GOCACHE="$HOME/.cache/claudii/go-build" GOMODCACHE="$HOME/.cache/claudii/gomod" \
+       GOPROXY=direct GOSUMDB=off PATH="/opt/homebrew/bin:$PATH"
 ```
 
 `internal/channel` tests bind real `httptest` listeners — inside the Claude
