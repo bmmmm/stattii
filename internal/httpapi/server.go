@@ -293,7 +293,9 @@ func (s *Server) portalSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	applied, err := s.svc.PortalSubmit(token, r.FormValue("kind"), r.FormValue("event_id"),
 		r.FormValue("title"), r.FormValue("note"), start, end)
-	if err != nil && !errors.Is(err, core.ErrCancelled) {
+	if err != nil {
+		// Core treats cancel-of-cancelled as an idempotent success; any
+		// error left here (e.g. moving a cancelled event) is real.
 		s.renderError(w, err)
 		return
 	}

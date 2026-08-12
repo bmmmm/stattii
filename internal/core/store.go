@@ -76,10 +76,30 @@ func (j *JSONStore) Save(st *State) error {
 		tmp.Close()
 		return err
 	}
+	// Rename is atomic for readers but not durable: without the fsync a
+	// power loss can bring the file back empty — unacceptable for the
+	// store that carries the delivery proof.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), j.statePath())
+	if err := os.Rename(tmp.Name(), j.statePath()); err != nil {
+		return err
+	}
+	return syncDir(j.dir)
+}
+
+// syncDir flushes the directory entry so a rename survives power loss.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func (j *JSONStore) Audit(kind string, data any) error {
@@ -96,8 +116,10 @@ func (j *JSONStore) Audit(kind string, data any) error {
 		return err
 	}
 	defer f.Close()
-	_, err = f.Write(append(line, '\n'))
-	return err
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 func (j *JSONStore) ReadAudit(limit int) ([]AuditEntry, error) {

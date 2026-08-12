@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -82,11 +83,14 @@ func cmdServe(args []string) {
 	if !set["tick"] && fc.Tick != "" {
 		*tickEvery = parseDur("tick", fc.Tick)
 	}
-	if !set["trusted-proxies"] && fc.TrustedProxies != "" {
-		*trustedProxies = fc.TrustedProxies
-	}
-	if *trustedProxies == "" {
-		*trustedProxies = os.Getenv("STATTII_TRUSTED_PROXIES")
+	if !set["trusted-proxies"] {
+		if fc.TrustedProxies != "" {
+			*trustedProxies = fc.TrustedProxies
+		} else if v := os.Getenv("STATTII_TRUSTED_PROXIES"); v != "" {
+			// Env is the lowest tier — it must never override an explicit
+			// --trusted-proxies "" (a deliberate "trust nothing").
+			*trustedProxies = v
+		}
 	}
 	trusted, err := httpapi.ParseTrustedProxies(*trustedProxies)
 	if err != nil {
@@ -169,7 +173,15 @@ func cmdServe(args []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go svc.RunScheduler(ctx, *tickEvery)
+	// Track the scheduler and poller so shutdown can wait for their
+	// current pass: killing a Tick after its sends but before its persist
+	// re-sends those messages on the next boot.
+	var bg sync.WaitGroup
+	bg.Add(1)
+	go func() {
+		defer bg.Done()
+		svc.RunScheduler(ctx, *tickEvery)
+	}()
 	if tgToken != "" {
 		poller := &channel.TelegramPoller{
 			Token: tgToken,
@@ -184,25 +196,52 @@ func cmdServe(args []string) {
 				return "Recorded: the event is cancelled — everyone is being notified.", nil
 			},
 		}
-		go poller.Run(ctx)
+		bg.Add(1)
+		go func() {
+			defer bg.Done()
+			poller.Run(ctx)
+		}()
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// Separate deadlines: a slow public drain must not eat the admin
+		// listener's whole budget.
+		pubCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(shutdownCtx)
-		adminSrv.Shutdown(shutdownCtx)
-	}()
-
-	go func() {
-		if err := adminSrv.Serve(adminLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("stattii: admin listener: %v", err)
+		if err := srv.Shutdown(pubCtx); err != nil {
+			log.Printf("stattii: public shutdown: %v", err)
+		}
+		admCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := adminSrv.Shutdown(admCtx); err != nil {
+			log.Printf("stattii: admin shutdown: %v", err)
 		}
 	}()
 
+	serveErr := make(chan error, 2)
+	go func() { serveErr <- adminSrv.Serve(adminLn) }()
+	go func() { serveErr <- srv.ListenAndServe() }()
 	log.Printf("stattii %s listening on %s (admin %s, base %s, data %s)", versionString(), *listen, *adminListen, *baseURL, *dataDir)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("stattii: %v", err)
+
+	// Serve returns ErrServerClosed the moment Shutdown starts — the
+	// process must then WAIT for the drain and for scheduler/poller to
+	// finish, not exit mid-flight. A real listener error tears down the
+	// rest and exits non-zero after the drain.
+	var fatal error
+	for range 2 {
+		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if fatal == nil {
+				fatal = err
+			}
+			stop()
+		}
+	}
+	<-shutdownDone
+	bg.Wait()
+	if fatal != nil {
+		log.Fatalf("stattii: %v", fatal)
 	}
 }
 
@@ -265,8 +304,9 @@ func parseAdminNotify(spec string) *core.Address {
 	}
 	kind, to, ok := strings.Cut(spec, ":")
 	if !ok || kind == "" || to == "" {
-		log.Printf("stattii: ignoring malformed admin_notify %q (want kind:address, e.g. telegram:12345)", spec)
-		return nil
+		// Fatal like every other config parse error: a typo here would
+		// silently disable escalation — the system's last line of defence.
+		log.Fatalf("stattii: malformed admin_notify %q (want kind:address, e.g. telegram:12345)", spec)
 	}
 	return &core.Address{Kind: kind, To: to}
 }

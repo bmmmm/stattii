@@ -62,6 +62,11 @@ type EventInput struct {
 	StartsAt      time.Time `json:"starts_at"`
 	EndsAt        time.Time `json:"ends_at"`
 	IfUnconfirmed string    `json:"if_unconfirmed"`
+	// SourceUID/SourceKey tie an imported event to its feed occurrence.
+	// Importer only — never accepted over the API, and set before the
+	// created webhook fires so consumers see the full identity.
+	SourceUID string `json:"-"`
+	SourceKey string `json:"-"`
 }
 
 func (in *EventInput) Validate() error {

@@ -494,3 +494,130 @@ func TestOverviewJoinsAssignmentsAndResponses(t *testing.T) {
 		t.Fatalf("counts wrong: people=%d proposals=%d", ov.People, ov.OpenProposals)
 	}
 }
+
+// A tick whose escalations enqueue admin mail must not lose the delivery
+// marks of items later in the same pass — a pointer into a reallocated
+// outbox backing array meant delivered items were re-sent every tick.
+func TestTickEscalationKeepsDeliveryMarks(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	e := mustEvent(t, svc, 40*time.Hour)
+	p := mustPerson(t, svc, "ana", TrustRespond)
+	if err := svc.Assign(e.ID, p.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelEvent(e.ID, "", "storm", "api"); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(11 * time.Minute) // past EscalateAfter, still deliverable
+	svc.Tick(*clock)
+	for _, o := range svc.OutboxItems(false) {
+		if o.Purpose == "cancellation" && (!o.Delivered() || o.Attempts != 1) {
+			t.Fatalf("delivery marks lost on escalating tick: %+v", o)
+		}
+	}
+	// The escalation itself goes out one tick later.
+	*clock = clock.Add(time.Minute)
+	svc.Tick(*clock)
+	if got := fake.byPurposeTo("admin@test.local"); len(got) == 0 {
+		t.Fatal("escalation never reached the admin")
+	}
+}
+
+// An event created inside the deadline window gets its ask plus a real
+// grace period — never asked and auto-cancelled in the same tick.
+func TestReminderAndDeadlineNeverSameTick(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	start := svc.now().Add(20 * time.Hour) // inside the 24h deadline lead
+	e, err := svc.CreateEvent(EventInput{
+		Title: "Late Setup", StartsAt: start, EndsAt: start.Add(time.Hour),
+		IfUnconfirmed: "cancel",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := mustPerson(t, svc, "ana", TrustRespond)
+	if err := svc.Assign(e.ID, p.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.Tick(*clock)
+	got, _ := svc.EventByID(e.ID)
+	if got.ReminderSentAt.IsZero() {
+		t.Fatal("reminder did not fire")
+	}
+	if got.Status == StatusCancelled {
+		t.Fatal("asked and auto-cancelled in the same tick")
+	}
+
+	*clock = clock.Add(90 * time.Minute) // grace over
+	svc.Tick(*clock)
+	if got, _ = svc.EventByID(e.ID); got.Status != StatusCancelled {
+		t.Fatal("dead-man-switch never fired after the grace")
+	}
+}
+
+// A proposal whose apply fails stays open — deciding it, webhooking it,
+// and telling the proposer "accepted" about a change that never happened
+// is exactly the wrong-communication failure stattii exists to prevent.
+func TestDecideProposalFailedApplyStaysOpen(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, _ := newTestService(t, fake)
+	e := mustEvent(t, svc, 90*time.Hour)
+	p := mustPerson(t, svc, "bo", TrustPropose)
+	if err := svc.Assign(e.ID, p.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PortalSubmit(p.PortalToken, "move", e.ID, "", "clash",
+		svc.now().Add(100*time.Hour), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelEvent(e.ID, "", "storm", "api"); err != nil {
+		t.Fatal(err)
+	}
+	pr := svc.Proposals()[0]
+	if _, err := svc.DecideProposal(pr.ID, true); err == nil {
+		t.Fatal("accepting a move on a cancelled event must fail")
+	}
+	if got := svc.Proposals()[0]; !got.DecidedAt.IsZero() || got.Accepted {
+		t.Fatalf("failed apply recorded a decision: %+v", got)
+	}
+	for _, o := range svc.OutboxItems(false) {
+		if o.Purpose == "proposal" && strings.Contains(o.Subject, "accepted") {
+			t.Fatalf("verdict mail enqueued despite failure: %+v", o)
+		}
+	}
+}
+
+func TestMoveEventRejectsZeroStart(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, _ := newTestService(t, fake)
+	e := mustEvent(t, svc, 90*time.Hour)
+	before := len(svc.OutboxItems(false))
+	if _, err := svc.MoveEvent(e.ID, time.Time{}, time.Time{}, "", "api"); err == nil {
+		t.Fatal("a move to the zero time was accepted")
+	}
+	if got := len(svc.OutboxItems(false)); got != before {
+		t.Fatal("a rejected move still fanned out")
+	}
+}
+
+// Assignees without channels count as not staffed: the one-shot reminder
+// must stay pending instead of burning on zero deliverable recipients.
+func TestReminderWaitsForReachableAssignee(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	e := mustEvent(t, svc, 40*time.Hour)
+	p, err := svc.AddPerson("mute", TrustRespond, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Assign(e.ID, p.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(*clock)
+	if got, _ := svc.EventByID(e.ID); !got.ReminderSentAt.IsZero() {
+		t.Fatal("one-shot reminder burned on an unreachable assignee")
+	}
+}

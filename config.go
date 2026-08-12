@@ -85,6 +85,11 @@ func loadFileConfig(path string, explicit bool) (fileConfig, error) {
 	if err := dec.Decode(&c); err != nil {
 		return fileConfig{}, fmt.Errorf("parse %s: %w (comments must be on their own lines, keys must match config.example.json)", path, err)
 	}
+	if dec.More() {
+		// "Unknown keys fail loudly" must extend past the first value — a
+		// stray brace or duplicated block would otherwise be half-ignored.
+		return fileConfig{}, fmt.Errorf("parse %s: trailing data after the config object", path)
+	}
 	return c, nil
 }
 

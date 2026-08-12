@@ -152,6 +152,8 @@ func (s *Service) createLocked(in EventInput, actor string) Event {
 		StartsAt:      in.StartsAt,
 		EndsAt:        in.EndsAt,
 		IfUnconfirmed: in.IfUnconfirmed,
+		SourceUID:     in.SourceUID,
+		SourceKey:     in.SourceKey,
 		Status:        StatusScheduled,
 		CreatedAt:     s.now(),
 	}
@@ -281,6 +283,14 @@ func (s *Service) MoveEvent(eventID string, start, end time.Time, note, actor st
 }
 
 func (s *Service) moveLocked(eventID string, start, end time.Time, note, actor string) (Event, error) {
+	// Validate here, not only in the callers: a zero start would fan out a
+	// "MOVED to 01 Jan 0001" notice to every recipient.
+	if start.IsZero() {
+		return Event{}, errors.New("starts_at is required for a move")
+	}
+	if !end.IsZero() && end.Before(start) {
+		return Event{}, errors.New("ends_at is before starts_at")
+	}
 	e := s.state.Event(eventID)
 	if e == nil {
 		return Event{}, ErrNotFound
@@ -302,7 +312,11 @@ func (s *Service) moveLocked(eventID string, start, end time.Time, note, actor s
 	s.auditLocked("event.moved", map[string]any{"event_id": eventID, "from": old, "to": start, "actor": actor})
 
 	subject := "MOVED: " + e.Title
-	body := fmt.Sprintf("%s has been MOVED.\nOld: %s\nNew: %s", e.Title, old.Format(timeFmt), start.Format(timeFmt))
+	newWhen := start.Format(timeFmt)
+	if !end.IsZero() {
+		newWhen += " until " + end.Format("15:04")
+	}
+	body := fmt.Sprintf("%s has been MOVED.\nOld: %s\nNew: %s", e.Title, old.Format(timeFmt), newWhen)
 	s.fanOutLocked(e, "moved", subject, body)
 	s.fireWebhooksLocked("event.moved", *e)
 	return *e, nil
@@ -702,19 +716,11 @@ func (s *Service) PortalSubmit(token, kind, eventID, title, note string, start, 
 	}
 	switch p.Trust {
 	case TrustDirect:
-		switch kind {
-		case "cancel":
-			_, err = s.cancelLocked(eventID, p.ID, note, "portal")
-		case "move":
-			_, err = s.moveLocked(eventID, start, end, note, p.ID)
-		case "create":
-			e := s.createLocked(EventInput{Title: title, Note: note, StartsAt: start, EndsAt: end}, p.ID)
-			s.state.Assignments = append(s.state.Assignments, Assignment{EventID: e.ID, PersonID: p.ID})
+		if err := s.applyChangeLocked(kind, p.ID, eventID, title, note, start, end, "portal"); err != nil {
+			return false, err
 		}
-		if err == nil {
-			s.saveLocked()
-		}
-		return true, err
+		s.saveLocked()
+		return true, nil
 	case TrustPropose:
 		pr := Proposal{
 			ID: NewID("pr"), PersonID: p.ID, Kind: kind, EventID: eventID,
@@ -748,20 +754,15 @@ func (s *Service) DecideProposal(id string, accept bool) (Proposal, error) {
 	if !pr.DecidedAt.IsZero() {
 		return *pr, errors.New("proposal already decided")
 	}
-	pr.DecidedAt = s.now()
-	pr.Accepted = accept
-	var err error
 	if accept {
-		switch pr.Kind {
-		case "cancel":
-			_, err = s.cancelLocked(pr.EventID, pr.PersonID, pr.Note, "proposal")
-		case "move":
-			_, err = s.moveLocked(pr.EventID, pr.StartsAt, pr.EndsAt, pr.Note, pr.PersonID)
-		case "create":
-			e := s.createLocked(EventInput{Title: pr.Title, Note: pr.Note, StartsAt: pr.StartsAt, EndsAt: pr.EndsAt}, pr.PersonID)
-			s.state.Assignments = append(s.state.Assignments, Assignment{EventID: e.ID, PersonID: pr.PersonID})
+		// The apply gates the decision: a proposal whose change failed
+		// stays open instead of being recorded — and announced — as done.
+		if err := s.applyChangeLocked(pr.Kind, pr.PersonID, pr.EventID, pr.Title, pr.Note, pr.StartsAt, pr.EndsAt, "proposal"); err != nil {
+			return *pr, err
 		}
 	}
+	pr.DecidedAt = s.now()
+	pr.Accepted = accept
 	s.auditLocked("proposal.decided", map[string]any{"proposal_id": id, "accepted": accept})
 	s.fireWebhooksLocked("proposal.decided", *pr)
 	if p := s.state.Person(pr.PersonID); p != nil {
@@ -778,7 +779,30 @@ func (s *Service) DecideProposal(id string, accept bool) (Proposal, error) {
 		}
 	}
 	s.saveLocked()
-	return *pr, err
+	return *pr, nil
+}
+
+// applyChangeLocked executes a cancel/move/create on behalf of a person —
+// the shared tail of direct portal submits and accepted proposals. Callers
+// persist after it succeeds; on error nothing outward has happened.
+func (s *Service) applyChangeLocked(kind, personID, eventID, title, note string, start, end time.Time, via string) error {
+	switch kind {
+	case "cancel":
+		_, err := s.cancelLocked(eventID, personID, note, via)
+		if errors.Is(err, ErrCancelled) {
+			return nil // cancelling a cancelled event is an idempotent no-op
+		}
+		return err
+	case "move":
+		_, err := s.moveLocked(eventID, start, end, note, personID)
+		return err
+	case "create":
+		e := s.createLocked(EventInput{Title: title, Note: note, StartsAt: start, EndsAt: end}, personID)
+		s.assignLocked(e.ID, personID, "")
+		return nil
+	default:
+		return fmt.Errorf("unknown kind %q", kind)
+	}
 }
 
 // ---- outbox, webhooks, escalation -----------------------------------------
@@ -879,6 +903,11 @@ func (s *Service) Propagation(eventID string) (PropagationStatus, error) {
 
 // ---- scheduler ------------------------------------------------------------
 
+// confirmGrace is the minimum time between the confirmation ask and the
+// dead-man-switch: recipients must get a real chance to answer before
+// silence is allowed to cancel anything.
+const confirmGrace = time.Hour
+
 // Tick runs one scheduler pass: due reminders, missed deadlines, outbox
 // delivery with backoff, and escalation of stuck items.
 func (s *Service) Tick(now time.Time) {
@@ -910,10 +939,17 @@ func (s *Service) tickRemindersLocked(now time.Time) bool {
 			continue
 		}
 		assignees := s.state.Assignees(e.ID)
-		if len(assignees) == 0 {
+		reachable := 0
+		for _, p := range assignees {
+			if len(p.Channels) > 0 {
+				reachable++
+			}
+		}
+		if reachable == 0 {
 			// Events are created first and staffed second; a tick in
 			// between must not burn the one-shot reminder on zero
-			// recipients. Leave it pending until someone is assigned.
+			// reachable recipients — assignees without channels count as
+			// not staffed yet. Leave it pending.
 			continue
 		}
 		for _, p := range assignees {
@@ -964,6 +1000,15 @@ func (s *Service) tickDeadlinesLocked(now time.Time) bool {
 			// dead-man-switch must still fire for them.
 			continue
 		}
+		if !e.ReminderSentAt.IsZero() && now.Sub(e.ReminderSentAt) < confirmGrace {
+			// The ask just went out — people need a real chance to answer
+			// before the dead-man-switch may fire. Without this, an event
+			// created inside the deadline window is asked and
+			// auto-cancelled in the same tick. If the grace reaches past
+			// the start, the deadline simply never fires — the
+			// conservative direction.
+			continue
+		}
 		if now.Before(e.StartsAt.Add(-s.cfg.DeadlineLead)) || now.After(e.StartsAt) {
 			continue
 		}
@@ -973,10 +1018,13 @@ func (s *Service) tickDeadlinesLocked(now time.Time) bool {
 		if e.IfUnconfirmed == "cancel" {
 			// Dead-man-switch: silence means the event does not happen —
 			// and the cancellation propagates like any other.
-			s.cancelLocked(e.ID, "", "auto-cancelled: unconfirmed by deadline", "deadline")
-			s.notifyAdminLocked("Auto-cancelled: "+e.Title,
-				fmt.Sprintf("%s on %s was unconfirmed by its deadline and has been auto-cancelled (dead-man-switch). Reinstate if wrong.",
-					e.Title, e.StartsAt.Format(timeFmt)))
+			if _, err := s.cancelLocked(e.ID, "", "auto-cancelled: unconfirmed by deadline", "deadline"); err != nil {
+				s.logf("stattii: dead-man-switch cancel of %s failed: %v", e.ID, err)
+			} else {
+				s.notifyAdminLocked("Auto-cancelled: "+e.Title,
+					fmt.Sprintf("%s on %s was unconfirmed by its deadline and has been auto-cancelled (dead-man-switch). Reinstate if wrong.",
+						e.Title, e.StartsAt.Format(timeFmt)))
+			}
 		} else {
 			s.notifyAdminLocked("No response: "+e.Title,
 				fmt.Sprintf("%s on %s is still unconfirmed and the response deadline has passed.",
@@ -989,6 +1037,13 @@ func (s *Service) tickDeadlinesLocked(now time.Time) bool {
 
 func (s *Service) tickOutboxLocked(now time.Time) bool {
 	changed := false
+	// Escalations are collected and enqueued after the loop: enqueueLocked
+	// appends to the outbox, and an append mid-loop can reallocate the
+	// backing array — every later write through o (Attempts, DeliveredAt)
+	// would then land in the stale copy and the item would be re-sent on
+	// every tick. They go out with the next pass, one interval later.
+	type stuck struct{ subject, body string }
+	var escalations []stuck
 	for i := 0; i < len(s.state.Outbox); i++ {
 		o := &s.state.Outbox[i]
 		if o.Delivered() {
@@ -998,8 +1053,10 @@ func (s *Service) tickOutboxLocked(now time.Time) bool {
 		if o.EscalatedAt.IsZero() && o.Purpose != "escalation" &&
 			now.Sub(o.CreatedAt) >= s.cfg.EscalateAfter {
 			o.EscalatedAt = now
-			s.notifyAdminLocked("Delivery stuck: "+o.Subject,
-				fmt.Sprintf("Undelivered for %s via %s to %s: %s", now.Sub(o.CreatedAt).Round(time.Minute), o.Kind, o.To, o.LastError))
+			escalations = append(escalations, stuck{
+				subject: "Delivery stuck: " + o.Subject,
+				body:    fmt.Sprintf("Undelivered for %s via %s to %s: %s", now.Sub(o.CreatedAt).Round(time.Minute), o.Kind, o.To, o.LastError),
+			})
 			changed = true
 		}
 		if o.Attempts >= s.cfg.MaxAttempts || now.Before(o.NextAttempt) {
@@ -1017,6 +1074,9 @@ func (s *Service) tickOutboxLocked(now time.Time) bool {
 		o.LastError = err.Error()
 		o.NextAttempt = now.Add(s.cfg.RetryDelay * time.Duration(1<<min(o.Attempts-1, 4)))
 		s.auditLocked("delivery.fail", map[string]any{"outbox_id": o.ID, "event_id": o.EventID, "purpose": o.Purpose, "kind": o.Kind, "to": o.To, "attempts": o.Attempts, "error": err.Error()})
+	}
+	for _, e := range escalations {
+		s.notifyAdminLocked(e.subject, e.body)
 	}
 	return changed
 }

@@ -125,9 +125,11 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 		}
 		e := s.eventBySourceKeyLocked(o.Key)
 		if e == nil {
-			ne := s.createLocked(EventInput{Title: title, Location: o.Location, StartsAt: o.Start, EndsAt: o.End}, "import")
+			ne := s.createLocked(EventInput{
+				Title: title, Location: o.Location, StartsAt: o.Start, EndsAt: o.End,
+				SourceUID: o.UID, SourceKey: o.Key,
+			}, "import")
 			ev := s.state.Event(ne.ID)
-			ev.SourceUID, ev.SourceKey = o.UID, o.Key
 			for _, sa := range s.state.SeriesAssignments {
 				if sa.SourceUID == o.UID && s.state.Person(sa.PersonID) != nil {
 					s.assignLocked(ev.ID, sa.PersonID, sa.Role)
@@ -143,13 +145,24 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 			}
 			continue
 		}
-		if !e.StartsAt.Equal(o.Start) || !e.EndsAt.Equal(o.End) {
+		if !e.StartsAt.Equal(o.Start) {
 			if _, err := s.moveLocked(e.ID, o.Start, o.End, "calendar update", "import"); err != nil {
 				rep.Conflicts = append(rep.Conflicts, fmt.Sprintf("%s: move failed: %v", e.Title, err))
 				continue
 			}
 			e.Title, e.Location = title, o.Location
 			rep.Moved++
+			continue
+		}
+		if !e.EndsAt.Equal(o.End) {
+			// An end-only change is not a move: nobody must re-confirm, and
+			// a "MOVED Old: X / New: X" mail (the body leads with the start)
+			// would read like nonsense. Quiet update, like a title edit.
+			e.EndsAt = o.End
+			e.Title, e.Location = title, o.Location
+			e.Seq++
+			s.auditLocked("import.updated", map[string]any{"event_id": e.ID, "title": title, "ends_at": o.End})
+			rep.Updated++
 			continue
 		}
 		if e.Title != title || e.Location != o.Location {

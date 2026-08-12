@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -220,5 +221,71 @@ func TestSyncEmptyFeedIsSuspect(t *testing.T) {
 	}
 	if len(rep.Vanished) != 0 {
 		t.Fatalf("suspect fetch must not report vanished events: %+v", rep)
+	}
+}
+
+// An end-only time change is not a move: no re-confirmation cycle, no
+// "MOVED Old: X / New: X" fan-out — a quiet update like a title edit.
+func TestSyncEndOnlyChangeIsQuietUpdate(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	now := *clock
+	until := now.Add(60 * 24 * time.Hour)
+	a := occ("u1", "Session", now.Add(48*time.Hour), time.Hour)
+	svc.SyncCalendar([]icsimport.Occurrence{a}, nil, until)
+	ev := svc.Events()[0]
+	if _, err := svc.ConfirmEvent(ev.ID, "", "api"); err != nil {
+		t.Fatal(err)
+	}
+
+	longer := a
+	longer.End = a.Start.Add(2 * time.Hour)
+	rep := svc.SyncCalendar([]icsimport.Occurrence{longer}, nil, until)
+	if rep.Updated != 1 || rep.Moved != 0 {
+		t.Fatalf("report: %+v", rep)
+	}
+	got, _ := svc.EventByID(ev.ID)
+	if got.Status != StatusConfirmed {
+		t.Fatalf("end-only change reset the confirmation: %v", got.Status)
+	}
+	if !got.EndsAt.Equal(longer.End) {
+		t.Fatal("end time not updated")
+	}
+	for _, o := range svc.OutboxItems(false) {
+		if o.Purpose == "moved" {
+			t.Fatalf("end-only change fanned out a MOVED notice: %+v", o)
+		}
+	}
+}
+
+// The created webhook fires with the import identity already set —
+// consumers must be able to tell imported events from hand-created ones.
+func TestImportCreatedWebhookCarriesSource(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	if _, err := svc.AddWebhook("https://consumer.example/hook", []string{"event.created"}); err != nil {
+		t.Fatal(err)
+	}
+	now := *clock
+	until := now.Add(60 * 24 * time.Hour)
+	svc.SyncCalendar([]icsimport.Occurrence{occ("u1", "Session", now.Add(48*time.Hour), time.Hour)}, nil, until)
+	saw := false
+	for _, o := range svc.OutboxItems(false) {
+		if o.Purpose != "webhook" || o.Subject != "event.created" {
+			continue
+		}
+		saw = true
+		var env struct {
+			Data Event `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(o.Body), &env); err != nil {
+			t.Fatal(err)
+		}
+		if env.Data.SourceUID != "u1" || env.Data.SourceKey == "" {
+			t.Fatalf("webhook payload missing source identity: %+v", env.Data)
+		}
+	}
+	if !saw {
+		t.Fatal("no event.created webhook enqueued")
 	}
 }

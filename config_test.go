@@ -78,3 +78,13 @@ func TestSecretResolutionFileThenEnv(t *testing.T) {
 		t.Fatalf("telegram env fallback broken: %q", got)
 	}
 }
+
+func TestTrailingConfigContentFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"listen": ":1"} {"listen": ":2"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadFileConfig(path, true); err == nil {
+		t.Fatal("trailing config content parsed silently")
+	}
+}

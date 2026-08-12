@@ -222,6 +222,9 @@ func cmdEvent(args []string) error {
 		end := fs.String("end", "", "new end time")
 		note := fs.String("note", "", "note")
 		fs.Parse(rest[1:])
+		if *at == "" {
+			return fmt.Errorf("--at is required: a move without a new start would notify everyone of a move to nowhere")
+		}
 		start, err := parseWhen(*at)
 		if err != nil {
 			return err
