@@ -425,3 +425,47 @@ func TestDeadmanSwitchFiresWithoutAssignees(t *testing.T) {
 		t.Fatalf("dead-man-switch did not fire for unstaffed event: status=%s", got.Status)
 	}
 }
+
+func TestOverviewJoinsAssignmentsAndResponses(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	e := mustEvent(t, svc, 40*time.Hour)
+	ana := mustPerson(t, svc, "ana", TrustRespond)
+	bob := mustPerson(t, svc, "bob", TrustRespond)
+	if err := svc.Assign(e.ID, ana.ID, "host"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Assign(e.ID, bob.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(*clock) // reminder to both, delivered via fake notifier
+
+	confirmURL, _, err := svc.GenerateLinks(e.ID, ana.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApplyAction(strings.TrimPrefix(confirmURL, "http://test.local/a/")); err != nil {
+		t.Fatal(err)
+	}
+
+	ov := svc.Overview()
+	if len(ov.Events) != 1 || len(ov.Events[0].Assignees) != 2 {
+		t.Fatalf("unexpected overview shape: %+v", ov)
+	}
+	byName := map[string]OverviewAssignee{}
+	for _, a := range ov.Events[0].Assignees {
+		byName[a.Name] = a
+	}
+	if a := byName["ana"]; a.Action != ActionConfirm || a.Via != "link" || a.Role != "host" {
+		t.Fatalf("ana not joined correctly: %+v", a)
+	}
+	if b := byName["bob"]; b.Action != "" {
+		t.Fatalf("bob should be pending, got %+v", b)
+	}
+	if ov.Outbox.Delivered != 2 || ov.Outbox.Pending != 0 || ov.Outbox.Failed != 0 {
+		t.Fatalf("outbox summary wrong: %+v", ov.Outbox)
+	}
+	if ov.People != 2 || ov.OpenProposals != 0 {
+		t.Fatalf("counts wrong: people=%d proposals=%d", ov.People, ov.OpenProposals)
+	}
+}

@@ -21,7 +21,9 @@ func (nullNotifier) Send(kind, to string, m core.Message) error { return nil }
 
 const testToken = "test-admin-token"
 
-func newTestServer(t *testing.T) (*core.Service, http.Handler) {
+// newTestServer returns the service plus BOTH handlers — public and
+// admin are separate muxes on purpose (separate listeners in serve).
+func newTestServer(t *testing.T) (*core.Service, http.Handler, http.Handler) {
 	t.Helper()
 	store, err := core.NewJSONStore(t.TempDir())
 	if err != nil {
@@ -31,7 +33,8 @@ func newTestServer(t *testing.T) (*core.Service, http.Handler) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return svc, httpapi.New(svc, testToken, "test", nil).Handler()
+	s := httpapi.New(svc, testToken, "test", nil)
+	return svc, s.PublicHandler(), s.AdminHandler()
 }
 
 func do(t *testing.T, h http.Handler, method, path, token string, body string) *httptest.ResponseRecorder {
@@ -52,7 +55,7 @@ func do(t *testing.T, h http.Handler, method, path, token string, body string) *
 }
 
 func TestAdminAuthRequired(t *testing.T) {
-	_, h := newTestServer(t)
+	_, _, h := newTestServer(t)
 	if w := do(t, h, "GET", "/api/v1/events", "", ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no token: got %d, want 401", w.Code)
 	}
@@ -65,7 +68,7 @@ func TestAdminAuthRequired(t *testing.T) {
 }
 
 func TestCreateEventViaAPI(t *testing.T) {
-	_, h := newTestServer(t)
+	_, _, h := newTestServer(t)
 	start := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
 	w := do(t, h, "POST", "/api/v1/events", testToken,
 		`{"title":"API Event","starts_at":"`+start+`"}`)
@@ -82,7 +85,7 @@ func TestCreateEventViaAPI(t *testing.T) {
 }
 
 func TestActionPageFlow(t *testing.T) {
-	svc, h := newTestServer(t)
+	svc, h, _ := newTestServer(t)
 	start := time.Now().Add(72 * time.Hour).UTC()
 	e, _ := svc.CreateEvent(core.EventInput{Title: "Click Test", StartsAt: start, EndsAt: start.Add(time.Hour)})
 	p, _ := svc.AddPerson("ana", core.TrustRespond, nil)
@@ -112,7 +115,7 @@ func TestActionPageFlow(t *testing.T) {
 }
 
 func TestActionProposeFlow(t *testing.T) {
-	svc, h := newTestServer(t)
+	svc, h, _ := newTestServer(t)
 	start := time.Now().Add(72 * time.Hour).UTC()
 	e, _ := svc.CreateEvent(core.EventInput{Title: "Move Me", StartsAt: start, EndsAt: start.Add(time.Hour)})
 	p, _ := svc.AddPerson("ana", core.TrustRespond, nil)
@@ -142,14 +145,14 @@ func TestActionProposeFlow(t *testing.T) {
 }
 
 func TestUnknownTokenIs404(t *testing.T) {
-	_, h := newTestServer(t)
+	_, h, _ := newTestServer(t)
 	if w := do(t, h, "GET", "/a/deadbeefdeadbeefdeadbeefdeadbeef", "", ""); w.Code != http.StatusNotFound {
 		t.Fatalf("got %d, want 404", w.Code)
 	}
 }
 
 func TestFeedServed(t *testing.T) {
-	svc, h := newTestServer(t)
+	svc, h, _ := newTestServer(t)
 	start := time.Now().Add(24 * time.Hour).UTC()
 	svc.CreateEvent(core.EventInput{Title: "Feed Event", StartsAt: start, EndsAt: start.Add(time.Hour)})
 	w := do(t, h, "GET", "/feed.ics", "", "")
@@ -165,7 +168,7 @@ func TestFeedServed(t *testing.T) {
 }
 
 func TestPublicRateLimit(t *testing.T) {
-	_, h := newTestServer(t)
+	_, h, _ := newTestServer(t)
 	limited := false
 	for range 40 {
 		if w := do(t, h, "GET", "/a/nosuchtoken", "", ""); w.Code == http.StatusTooManyRequests {
@@ -175,5 +178,23 @@ func TestPublicRateLimit(t *testing.T) {
 	}
 	if !limited {
 		t.Fatal("40 rapid requests never hit the rate limit")
+	}
+}
+
+// The admin API must not exist on the public mux — not even with a valid
+// token. This is the listener-split guarantee deployers rely on: the
+// public listener cannot leak management routes, whatever the proxy does.
+func TestAdminAPIAbsentFromPublic(t *testing.T) {
+	_, pub, _ := newTestServer(t)
+	for _, probe := range []struct{ method, path string }{
+		{"GET", "/api/v1/events"},
+		{"POST", "/api/v1/events"},
+		{"GET", "/api/v1/overview"},
+		{"GET", "/api/v1/audit"},
+		{"POST", "/api/v1/tick"},
+	} {
+		if w := do(t, pub, probe.method, probe.path, testToken, ""); w.Code != http.StatusNotFound {
+			t.Fatalf("%s %s on public mux: got %d, want 404", probe.method, probe.path, w.Code)
+		}
 	}
 }

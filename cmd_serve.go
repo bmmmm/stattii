@@ -23,7 +23,8 @@ import (
 func cmdServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	cfgPath := fs.String("config", "config.json", "config file (JSON with // comment lines; see config.example.json)")
-	listen := fs.String("listen", ":8788", "listen address")
+	listen := fs.String("listen", ":8788", "public listen address (token pages, portal, feed)")
+	adminListen := fs.String("admin-listen", "127.0.0.1:8789", "admin listen address (API + web admin) — keep it off the public interface")
 	dataDir := fs.String("data", "./data", "data directory (state.json, audit.jsonl, admin-token)")
 	baseURL := fs.String("base-url", "", "public base URL used in links (default http://localhost:<port>)")
 	calName := fs.String("cal-name", "stattii", "calendar name in the ICS feed")
@@ -51,6 +52,13 @@ func cmdServe(args []string) {
 	// Explicit flags win; otherwise the config file fills the gaps.
 	if !set["listen"] && fc.Listen != "" {
 		*listen = fc.Listen
+	}
+	if !set["admin-listen"] {
+		if fc.AdminListen != "" {
+			*adminListen = fc.AdminListen
+		} else if v := os.Getenv("STATTII_ADMIN_LISTEN"); v != "" {
+			*adminListen = v
+		}
 	}
 	if !set["data"] && fc.DataDir != "" {
 		*dataDir = fc.DataDir
@@ -128,9 +136,18 @@ func cmdServe(args []string) {
 		log.Fatalf("stattii: %v", err)
 	}
 
+	api := httpapi.New(svc, adminToken, *calName, trusted)
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           httpapi.New(svc, adminToken, *calName, trusted).Handler(),
+		Handler:           api.PublicHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	// The admin surface is a separate listener on purpose: the public
+	// server cannot route to it, so a proxy misconfiguration cannot
+	// expose management. Default binds to loopback.
+	adminSrv := &http.Server{
+		Addr:              *adminListen,
+		Handler:           api.AdminHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -158,9 +175,16 @@ func cmdServe(args []string) {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		srv.Shutdown(shutdownCtx)
+		adminSrv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("stattii %s listening on %s (base %s, data %s)", versionString(), *listen, *baseURL, *dataDir)
+	go func() {
+		if err := adminSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("stattii: admin listener: %v", err)
+		}
+	}()
+
+	log.Printf("stattii %s listening on %s (admin %s, base %s, data %s)", versionString(), *listen, *adminListen, *baseURL, *dataDir)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("stattii: %v", err)
 	}

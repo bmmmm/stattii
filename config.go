@@ -16,7 +16,12 @@ import (
 // Unknown keys are rejected loudly so typos cannot be silently ignored.
 // Precedence at startup: explicit serve flags > config.json > STATTII_* env.
 type fileConfig struct {
-	Listen        string `json:"listen"`
+	Listen string `json:"listen"`
+	// Admin API + web admin bind here — a separate listener so the public
+	// one can never serve management routes. Keep it off public interfaces
+	// (default 127.0.0.1:8789; reach it via SSH tunnel, VPN or an
+	// internally-restricted reverse proxy).
+	AdminListen   string `json:"admin_listen"`
 	BaseURL       string `json:"base_url"`
 	CalName       string `json:"cal_name"`
 	DataDir       string `json:"data_dir"`

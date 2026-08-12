@@ -1052,6 +1052,85 @@ func (s *Service) Audit(limit int) ([]AuditEntry, error) {
 	return s.store.ReadAudit(limit)
 }
 
+// ---- overview -------------------------------------------------------------
+
+// Overview is the operator's one-glance answer: every event with its
+// responsible people and their latest answer, plus outbox and proposal
+// health. One server-side join so CLI and web admin render the same data.
+type Overview struct {
+	Events        []OverviewEvent `json:"events"`
+	Outbox        OutboxSummary   `json:"outbox"`
+	OpenProposals int             `json:"open_proposals"`
+	People        int             `json:"people"`
+}
+
+type OverviewEvent struct {
+	Event     Event              `json:"event"`
+	Assignees []OverviewAssignee `json:"assignees"`
+}
+
+type OverviewAssignee struct {
+	PersonID string     `json:"person_id"`
+	Name     string     `json:"name"`
+	Role     string     `json:"role,omitempty"`
+	Trust    TrustLevel `json:"trust"`
+	// Latest recorded response for this event; empty Action = pending.
+	Action ActionKind `json:"action,omitempty"`
+	Via    string     `json:"via,omitempty"`
+	At     time.Time  `json:"at,omitzero"`
+}
+
+type OutboxSummary struct {
+	Delivered int `json:"delivered"`
+	Pending   int `json:"pending"`
+	Failed    int `json:"failed"`
+}
+
+func (s *Service) Overview() Overview {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ov := Overview{People: len(s.state.People)}
+	for _, e := range s.state.Events {
+		oe := OverviewEvent{Event: e}
+		for _, a := range s.state.Assignments {
+			if a.EventID != e.ID {
+				continue
+			}
+			p := s.state.Person(a.PersonID)
+			if p == nil {
+				continue
+			}
+			oa := OverviewAssignee{PersonID: p.ID, Name: p.Name, Role: a.Role, Trust: p.Trust}
+			for _, r := range s.state.Responses {
+				if r.EventID == e.ID && r.PersonID == p.ID && r.At.After(oa.At) {
+					oa.Action, oa.Via, oa.At = r.Action, r.Via, r.At
+				}
+			}
+			oe.Assignees = append(oe.Assignees, oa)
+		}
+		ov.Events = append(ov.Events, oe)
+	}
+	sort.Slice(ov.Events, func(i, j int) bool {
+		return ov.Events[i].Event.StartsAt.Before(ov.Events[j].Event.StartsAt)
+	})
+	for _, o := range s.state.Outbox {
+		switch {
+		case o.Delivered():
+			ov.Outbox.Delivered++
+		case o.Attempts >= s.cfg.MaxAttempts:
+			ov.Outbox.Failed++
+		default:
+			ov.Outbox.Pending++
+		}
+	}
+	for _, p := range s.state.Proposals {
+		if p.DecidedAt.IsZero() {
+			ov.OpenProposals++
+		}
+	}
+	return ov
+}
+
 // OutboxItems lists outbound messages, optionally only undelivered ones.
 func (s *Service) OutboxItems(pendingOnly bool) []OutboxItem {
 	s.mu.Lock()

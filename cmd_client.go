@@ -12,26 +12,29 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/bmmmm/stattii/internal/core"
 )
 
-// api performs one authenticated request against the stattii server and
-// pretty-prints the JSON response — the CLI is a thin skin over the API.
-func api(method, path string, body any) error {
+// apiRequest performs one authenticated request against the stattii
+// server. The CLI talks to the ADMIN listener (loopback by default) —
+// the public listener does not carry /api/v1 at all.
+func apiRequest(method, path string, body any) (*http.Response, error) {
 	base := os.Getenv("STATTII_URL")
 	if base == "" {
-		base = "http://localhost:8788"
+		base = "http://127.0.0.1:8789"
 	}
 	var rdr io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rdr = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequest(method, strings.TrimRight(base, "/")+path, rdr)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if tok := os.Getenv("STATTII_TOKEN"); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
@@ -42,7 +45,16 @@ func api(method, path string, body any) error {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("%v (is the server running? set STATTII_URL if not on %s)", err, base)
+		return nil, fmt.Errorf("%v (is the server running? STATTII_URL must point at the admin listener, not %s)", err, base)
+	}
+	return resp, nil
+}
+
+// api pretty-prints the JSON response — the CLI is a thin skin over the API.
+func api(method, path string, body any) error {
+	resp, err := apiRequest(method, path, body)
+	if err != nil {
+		return err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
@@ -58,6 +70,23 @@ func api(method, path string, body any) error {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// apiJSON fetches path and decodes the response for rendered views.
+func apiJSON(path string, out any) error {
+	resp, err := apiRequest("GET", path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return json.Unmarshal(raw, out)
 }
 
 // parseWhen accepts RFC3339 or the shorter "2006-01-02T15:04" (local time).
@@ -78,6 +107,8 @@ func cmdClient(args []string) error {
 	cmd := args[0]
 	rest := args[1:]
 	switch cmd {
+	case "overview":
+		return cmdOverview(rest)
 	case "event":
 		return cmdEvent(rest)
 	case "person":
@@ -313,4 +344,60 @@ func cmdProposal(args []string) error {
 	default:
 		return fmt.Errorf("unknown proposal subcommand %q", args[0])
 	}
+}
+
+// cmdOverview renders the operator's one-glance view: upcoming events,
+// who is responsible, who answered what, and outbox/proposal health.
+func cmdOverview(args []string) error {
+	fs := flag.NewFlagSet("overview", flag.ExitOnError)
+	all := fs.Bool("all", false, "include past events")
+	fs.Parse(args)
+
+	var ov core.Overview
+	if err := apiJSON("/api/v1/overview", &ov); err != nil {
+		return err
+	}
+
+	now := time.Now()
+	shown := 0
+	for _, oe := range ov.Events {
+		e := oe.Event
+		if !*all && e.EndsAt.Before(now) && e.StartsAt.Before(now) {
+			continue
+		}
+		shown++
+		extra := ""
+		if !e.ReminderSentAt.IsZero() {
+			extra = " · reminder sent"
+		}
+		fmt.Printf("%s  %s  [%s]%s\n",
+			e.StartsAt.Local().Format("Mon 02 Jan 15:04"), e.Title, e.Status, extra)
+		if len(oe.Assignees) == 0 {
+			fmt.Printf("    (nobody assigned — reminder waits, dead-man-switch does not)\n")
+		}
+		for _, a := range oe.Assignees {
+			mark, detail := "–", "no response yet"
+			switch a.Action {
+			case core.ActionConfirm:
+				mark, detail = "✓", fmt.Sprintf("confirmed via %s, %s", a.Via, a.At.Local().Format("02 Jan 15:04"))
+			case core.ActionCancel:
+				mark, detail = "✗", fmt.Sprintf("cancelled via %s, %s", a.Via, a.At.Local().Format("02 Jan 15:04"))
+			}
+			role := ""
+			if a.Role != "" {
+				role = " (" + a.Role + ")"
+			}
+			fmt.Printf("    %s %s%s — %s\n", mark, a.Name, role, detail)
+		}
+	}
+	if shown == 0 {
+		fmt.Println("(no upcoming events — use --all for past ones)")
+	}
+	fmt.Printf("\noutbox: %d delivered · %d pending · %d failed",
+		ov.Outbox.Delivered, ov.Outbox.Pending, ov.Outbox.Failed)
+	if ov.OpenProposals > 0 {
+		fmt.Printf(" · %d open proposal(s)!", ov.OpenProposals)
+	}
+	fmt.Printf("\npeople: %d\n", ov.People)
+	return nil
 }

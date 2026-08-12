@@ -5,8 +5,14 @@
 // are comments; unknown keys are rejected so typos fail loudly.
 // Precedence: explicit `serve` flags > this file > STATTII_* env vars.
 {
-  // Where the HTTP server listens.
+  // Where the PUBLIC server listens (token pages, portal, ICS feed).
   "listen": ":8788",
+
+  // Where the ADMIN surface listens (REST API + web admin). A separate
+  // listener on purpose: the public one can never serve management
+  // routes. Keep this off public interfaces — reach it via SSH tunnel,
+  // VPN, or a reverse proxy that only allows internal sources.
+  "admin_listen": "127.0.0.1:8789",
 
   // Public base URL used in every action/portal link — set this in
   // production, recipients click these.

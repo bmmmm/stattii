@@ -31,7 +31,8 @@ func usage() {
 Server:
   stattii serve [--listen :8788] [--data ./data] [--base-url URL] ...
 
-Client (uses STATTII_URL and STATTII_TOKEN):
+Client (uses STATTII_URL and STATTII_TOKEN — point them at the ADMIN listener):
+  stattii overview [--all]
   stattii event    list | create | show | confirm | cancel | reinstate | move | links | responses | propagation
   stattii person   list | add
   stattii assign   <event-id> <person-id>

@@ -71,7 +71,11 @@ func ParseTrustedProxies(s string) ([]*net.IPNet, error) {
 	return nets, nil
 }
 
-func (s *Server) Handler() http.Handler {
+// PublicHandler is the only surface a public listener serves: tokenized
+// action pages, personal portals, the ICS feed, healthz. The admin API
+// and web UI exist solely on AdminHandler — a reverse-proxy mistake
+// cannot expose them through the public listener.
+func (s *Server) PublicHandler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Public, rate-limited. GET never mutates — mail scanners prefetch links.
@@ -82,11 +86,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /p/{token}/respond", s.public(s.portalRespond))
 	mux.HandleFunc("POST /p/{token}/submit", s.public(s.portalSubmit))
 	mux.HandleFunc("GET /feed.ics", s.feed)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("ok\n"))
-	})
+	mux.HandleFunc("GET /healthz", healthz)
+	return mux
+}
 
-	// Admin API.
+// AdminHandler carries /api/v1 behind bearer auth. Bind it to a
+// non-public address (default 127.0.0.1:8789) — SSH tunnel, VPN or an
+// internally-restricted reverse proxy, the deployer's choice.
+func (s *Server) AdminHandler() http.Handler {
+	mux := http.NewServeMux()
 	api := map[string]http.HandlerFunc{
 		"GET /api/v1/events":                  s.listEvents,
 		"POST /api/v1/events":                 s.createEvent,
@@ -112,12 +120,19 @@ func (s *Server) Handler() http.Handler {
 		"POST /api/v1/webhooks":               s.createWebhook,
 		"DELETE /api/v1/webhooks/{id}":        s.deleteWebhook,
 		"GET /api/v1/audit":                   s.audit,
+		"GET /api/v1/overview":                s.overview,
 		"POST /api/v1/tick":                   s.tick,
 	}
 	for pattern, h := range api {
 		mux.HandleFunc(pattern, s.auth(h))
 	}
+	s.registerAdminUI(mux)
+	mux.HandleFunc("GET /healthz", healthz)
 	return mux
+}
+
+func healthz(w http.ResponseWriter, _ *http.Request) {
+	w.Write([]byte("ok\n"))
 }
 
 // ---- middleware -----------------------------------------------------------
@@ -473,6 +488,10 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	}
 	entries, err := s.svc.Audit(limit)
 	respond(w, entries, err, http.StatusOK)
+}
+
+func (s *Server) overview(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.Overview())
 }
 
 func (s *Server) tick(w http.ResponseWriter, _ *http.Request) {
