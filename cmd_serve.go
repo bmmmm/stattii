@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -146,9 +147,12 @@ func cmdServe(args []string) {
 	// server cannot route to it, so a proxy misconfiguration cannot
 	// expose management. Default binds to loopback.
 	adminSrv := &http.Server{
-		Addr:              *adminListen,
 		Handler:           api.AdminHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+	adminLn, err := listenAdmin(*adminListen)
+	if err != nil {
+		log.Fatalf("stattii: admin listener: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -179,7 +183,7 @@ func cmdServe(args []string) {
 	}()
 
 	go func() {
-		if err := adminSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := adminSrv.Serve(adminLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("stattii: admin listener: %v", err)
 		}
 	}()
@@ -188,6 +192,30 @@ func cmdServe(args []string) {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("stattii: %v", err)
 	}
+}
+
+// listenAdmin binds the admin surface. An address containing "/" is a
+// unix socket path — access control then rides on file permissions, the
+// cleanest wiring for a same-host reverse proxy. Anything else is TCP.
+func listenAdmin(addr string) (net.Listener, error) {
+	if !strings.Contains(addr, "/") {
+		return net.Listen("tcp", addr)
+	}
+	// A stale socket file from a crashed process would block the bind.
+	if err := os.Remove(addr); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	ln, err := net.Listen("unix", addr)
+	if err != nil {
+		return nil, err
+	}
+	// Owner + group may connect; share with a proxy user via group
+	// ownership of the directory. Close() unlinks the file on shutdown.
+	if err := os.Chmod(addr, 0o660); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	return ln, nil
 }
 
 // loadAdminToken reads STATTII_ADMIN_TOKEN, falling back to <data>/admin-token,

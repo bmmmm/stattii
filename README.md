@@ -139,8 +139,17 @@ ssh -L 8789:127.0.0.1:8789 your-server
 ```
 
 or bind it into a VPN/private network (`admin_listen: "10.x.x.x:8789"`),
-or put an internally-restricted reverse proxy in front. Behind a proxy,
-set `trusted_proxies` so the public rate limiter sees real client IPs.
+or put an internally-restricted reverse proxy in front. For a same-host
+proxy the cleanest wiring is a unix socket — any `admin_listen` value
+containing `/` is treated as a socket path (created mode 660, share via
+group ownership):
+
+```json
+"admin_listen": "/run/stattii/admin.sock"
+```
+
+Behind a proxy, set `trusted_proxies` so the public rate limiter sees
+real client IPs.
 
 ## API
 

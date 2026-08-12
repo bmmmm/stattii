@@ -12,6 +12,8 @@
   // listener on purpose: the public one can never serve management
   // routes. Keep this off public interfaces — reach it via SSH tunnel,
   // VPN, or a reverse proxy that only allows internal sources.
+  // A value containing "/" is a unix socket path (file mode 660) —
+  // access control via file permissions, ideal for a same-host proxy.
   "admin_listen": "127.0.0.1:8789",
 
   // Public base URL used in every action/portal link — set this in
