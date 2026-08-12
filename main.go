@@ -37,7 +37,7 @@ Client (uses STATTII_URL and STATTII_TOKEN — point them at the ADMIN listener)
   stattii series-assign <source-uid> <person-id> [role]
   stattii event    list | create | show | confirm | cancel | reinstate | move | links | responses | propagation
   stattii person   list | add | test
-  stattii assign   <event-id> <person-id>
+  stattii assign   <event-id> <person-id> [role]
   stattii broadcast list | add | rm
   stattii webhook  list | add | rm
   stattii proposal list | accept | reject
@@ -46,7 +46,8 @@ Client (uses STATTII_URL and STATTII_TOKEN — point them at the ADMIN listener)
   stattii tick
   stattii version
 
-Run 'stattii <cmd> --help' for flags.
+Run 'stattii serve --help' for server flags; leaf commands take the flags
+shown next to them (e.g. 'stattii event move <id> --at ...').
 `)
 }
 

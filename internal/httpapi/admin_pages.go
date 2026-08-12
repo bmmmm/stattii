@@ -56,7 +56,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{range $imp.Skipped}}<p class="muted">Import skipped: {{.}}</p>{{end}}
 {{end}}
 {{range .Proposals}}
-  <p>Proposal <strong>{{.Kind}}</strong>{{if .Title}} „{{.Title}}"{{end}}{{if .EventID}} for {{.EventID}}{{end}}
+  <p>Proposal <strong>{{.Kind}}</strong>{{if .Title}} "{{.Title}}"{{end}}{{if .EventID}} for {{.EventID}}{{end}}
   {{if not .StartsAt.IsZero}} → {{.StartsAt.Format "Mon, 02 Jan 15:04"}}{{end}}
   {{if .Note}}<span class="muted">({{.Note}})</span>{{end}}
   <form method="post" action="/admin/proposals/{{.ID}}"><input type="hidden" name="decision" value="accept"><button class="yes" type="submit">Accept</button></form>
@@ -158,6 +158,14 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{range .Propagation.Items}}<p class="muted">{{.Purpose}} → {{.To}} ({{.Kind}}), {{if .Delivered}}delivered {{.DeliveredAt.Format "02 Jan 15:04"}}{{else}}{{.Attempts}} attempts{{end}}</p>{{end}}
 </div>
 {{end}}
+</body></html>{{end}}
+
+{{define "admin_error"}}{{template "admin_head"}}
+<h1>stattii admin</h1>
+<div class="card">
+<p><strong>That did not work:</strong> {{.}}</p>
+<p class="muted"><a href="/admin">Back to the overview</a></p>
+</div>
 </body></html>{{end}}
 
 {{define "admin_people"}}{{template "admin_head"}}

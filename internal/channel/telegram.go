@@ -44,15 +44,17 @@ func (t *Telegram) Send(to string, m core.Message) error {
 	if len(m.Buttons) > 0 {
 		var row []map[string]string
 		for _, b := range m.Buttons {
-			btn := map[string]string{"text": b.Label}
-			if b.Data != "" {
-				btn["callback_data"] = b.Data
-			} else {
-				btn["url"] = b.URL
+			if b.Data == "" {
+				// A button without callback data would need a URL variant,
+				// which no producer builds — and an empty one makes
+				// Telegram reject the whole message.
+				continue
 			}
-			row = append(row, btn)
+			row = append(row, map[string]string{"text": b.Label, "callback_data": b.Data})
 		}
-		req["reply_markup"] = map[string]any{"inline_keyboard": [][]map[string]string{row}}
+		if len(row) > 0 {
+			req["reply_markup"] = map[string]any{"inline_keyboard": [][]map[string]string{row}}
+		}
 	}
 	payload, err := json.Marshal(req)
 	if err != nil {

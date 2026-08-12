@@ -216,6 +216,11 @@ func (s *Service) LastImport() *ImportReport {
 		return nil
 	}
 	cp := *s.state.LastImport
+	// Deep copy — the struct copy alone would share the list backing
+	// arrays with live state.
+	cp.Vanished = append([]string(nil), cp.Vanished...)
+	cp.Conflicts = append([]string(nil), cp.Conflicts...)
+	cp.Skipped = append([]string(nil), cp.Skipped...)
 	return &cp
 }
 

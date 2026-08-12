@@ -230,17 +230,10 @@ func (s *Server) actionApply(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) actionPropose(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	start, err := time.ParseInLocation("2006-01-02T15:04", r.FormValue("starts_at"), time.Local)
+	start, end, err := formTimes(r)
 	if err != nil {
-		s.renderError(w, errors.New("invalid start time"))
+		s.renderError(w, err)
 		return
-	}
-	var end time.Time
-	if v := r.FormValue("ends_at"); v != "" {
-		if end, err = time.ParseInLocation("2006-01-02T15:04", v, time.Local); err != nil {
-			s.renderError(w, errors.New("invalid end time"))
-			return
-		}
 	}
 	if _, err := s.svc.ProposeMoveViaLink(token, start, end, r.FormValue("note")); err != nil {
 		s.renderError(w, err)
@@ -275,21 +268,10 @@ func (s *Server) portalRespond(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) portalSubmit(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	var start, end time.Time
-	var err error
-	if v := r.FormValue("starts_at"); v != "" {
-		start, err = time.ParseInLocation("2006-01-02T15:04", v, time.Local)
-		if err != nil {
-			s.renderError(w, errors.New("invalid start time"))
-			return
-		}
-	}
-	if v := r.FormValue("ends_at"); v != "" {
-		end, err = time.ParseInLocation("2006-01-02T15:04", v, time.Local)
-		if err != nil {
-			s.renderError(w, errors.New("invalid end time"))
-			return
-		}
+	start, end, err := formTimes(r)
+	if err != nil {
+		s.renderError(w, err)
+		return
 	}
 	applied, err := s.svc.PortalSubmit(token, r.FormValue("kind"), r.FormValue("event_id"),
 		r.FormValue("title"), r.FormValue("note"), start, end)
@@ -542,6 +524,23 @@ func (s *Server) tick(w http.ResponseWriter, _ *http.Request) {
 }
 
 // ---- helpers --------------------------------------------------------------
+
+// formTimes parses the datetime-local inputs shared by every form that
+// takes a start and an optional end, in server-local time. Presence rules
+// (a move needs a start, …) live in core, not here.
+func formTimes(r *http.Request) (start, end time.Time, err error) {
+	if v := r.FormValue("starts_at"); v != "" {
+		if start, err = time.ParseInLocation("2006-01-02T15:04", v, time.Local); err != nil {
+			return start, end, errors.New("invalid start time")
+		}
+	}
+	if v := r.FormValue("ends_at"); v != "" {
+		if end, err = time.ParseInLocation("2006-01-02T15:04", v, time.Local); err != nil {
+			return start, end, errors.New("invalid end time")
+		}
+	}
+	return start, end, nil
+}
 
 func respond(w http.ResponseWriter, data any, err error, okStatus int) {
 	if err != nil {

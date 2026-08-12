@@ -65,10 +65,12 @@ func api(method, path string, body any) error {
 	if json.Indent(&pretty, raw, "", "  ") == nil {
 		raw = pretty.Bytes()
 	}
-	fmt.Println(strings.TrimSpace(string(raw)))
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		// The error payload must not land in a redirected stdout as if it
+		// were the requested data.
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
+	fmt.Println(strings.TrimSpace(string(raw)))
 	return nil
 }
 
@@ -161,7 +163,7 @@ func cmdClient(args []string) error {
 
 func cmdEvent(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii event list|create|show|confirm|cancel|move|links|responses|propagation")
+		return fmt.Errorf("usage: stattii event list|create|show|confirm|cancel|reinstate|move|links|responses|propagation")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {

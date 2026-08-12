@@ -109,12 +109,13 @@ const (
 )
 
 // ActionLink is a tokenized capability: one person, one event, one action.
+// Expiry is computed live from the event (eventExpiry) — a stored copy
+// would silently diverge after every move.
 type ActionLink struct {
 	Token     string     `json:"token"`
 	EventID   string     `json:"event_id"`
 	PersonID  string     `json:"person_id"`
 	Action    ActionKind `json:"action"`
-	ExpiresAt time.Time  `json:"expires_at"`
 	RevokedAt time.Time  `json:"revoked_at"`
 }
 
@@ -165,7 +166,6 @@ type Webhook struct {
 type Button struct {
 	Label string `json:"label"`
 	Data  string `json:"data,omitempty"` // action-link token for callbacks
-	URL   string `json:"url,omitempty"`
 }
 
 // OutboxItem is one pending or delivered outbound message. All sends go

@@ -3,3 +3,11 @@
 /tmp/
 /config.json
 .claude/settings.local.json
+
+# State and credentials wherever a non-default data_dir puts them —
+# these must never be one `git add -A` away from the public mirror.
+state.json
+audit.jsonl
+admin-token
+*.sock
+.DS_Store

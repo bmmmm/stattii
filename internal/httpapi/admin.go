@@ -247,7 +247,7 @@ func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if found == nil {
-		s.renderError(w, core.ErrNotFound)
+		s.renderAdminError(w, core.ErrNotFound)
 		return
 	}
 	d := adminEventData{Ev: *found, People: s.svc.People()}
@@ -260,13 +260,34 @@ func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
 	s.renderAdmin(w, "admin_event", d)
 }
 
-// adminAct wraps a mutation and redirects back to the event page.
-func (s *Server) adminAct(w http.ResponseWriter, r *http.Request, err error) {
+// redirectOr renders the admin error page on err, else redirects to dest.
+// Cancelling an already-cancelled event counts as done, not as an error.
+func (s *Server) redirectOr(w http.ResponseWriter, r *http.Request, err error, dest string) {
 	if err != nil && !errors.Is(err, core.ErrCancelled) {
-		s.renderError(w, err)
+		s.renderAdminError(w, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/event/"+r.PathValue("id"), http.StatusSeeOther)
+	http.Redirect(w, r, dest, http.StatusSeeOther)
+}
+
+// adminAct wraps a mutation and redirects back to the event page.
+func (s *Server) adminAct(w http.ResponseWriter, r *http.Request, err error) {
+	s.redirectOr(w, r, err, "/admin/event/"+r.PathValue("id"))
+}
+
+// renderAdminError is the operator-voiced error page — the public one
+// gives link-holder advice that is useless behind /admin.
+func (s *Server) renderAdminError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	switch {
+	case errors.Is(err, core.ErrNotFound):
+		status = http.StatusNotFound
+	case errors.Is(err, core.ErrGone):
+		status = http.StatusGone
+	case errors.Is(err, core.ErrCancelled):
+		status = http.StatusConflict
+	}
+	renderTo(w, adminTmpl, "admin_error", status, err.Error())
 }
 
 func (s *Server) adminEventConfirm(w http.ResponseWriter, r *http.Request) {
@@ -285,17 +306,10 @@ func (s *Server) adminEventReinstate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminEventMove(w http.ResponseWriter, r *http.Request) {
-	start, err := time.ParseInLocation("2006-01-02T15:04", r.FormValue("starts_at"), time.Local)
+	start, end, err := formTimes(r)
 	if err != nil {
-		s.renderError(w, errors.New("invalid start time"))
+		s.renderAdminError(w, err)
 		return
-	}
-	var end time.Time
-	if v := r.FormValue("ends_at"); v != "" {
-		if end, err = time.ParseInLocation("2006-01-02T15:04", v, time.Local); err != nil {
-			s.renderError(w, errors.New("invalid end time"))
-			return
-		}
 	}
 	_, err = s.svc.MoveEvent(r.PathValue("id"), start, end, r.FormValue("note"), "admin")
 	s.adminAct(w, r, err)
@@ -306,7 +320,7 @@ func (s *Server) adminEventAssign(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("series") == "1" {
 		e, err := s.svc.EventByID(r.PathValue("id"))
 		if err != nil || e.SourceUID == "" {
-			s.renderError(w, core.ErrNotFound)
+			s.renderAdminError(w, core.ErrNotFound)
 			return
 		}
 		_, err = s.svc.AssignSeries(e.SourceUID, r.FormValue("person_id"), r.FormValue("role"))
@@ -317,25 +331,15 @@ func (s *Server) adminEventAssign(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminCalendarFetch(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.svc.FetchCalendar(r.Context()); err != nil {
-		s.renderError(w, err)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+	_, err := s.svc.FetchCalendar(r.Context())
+	s.redirectOr(w, r, err, "/admin")
 }
 
 func (s *Server) adminEventCreate(w http.ResponseWriter, r *http.Request) {
-	start, err := time.ParseInLocation("2006-01-02T15:04", r.FormValue("starts_at"), time.Local)
+	start, end, err := formTimes(r)
 	if err != nil {
-		s.renderError(w, errors.New("invalid start time"))
+		s.renderAdminError(w, err)
 		return
-	}
-	var end time.Time
-	if v := r.FormValue("ends_at"); v != "" {
-		if end, err = time.ParseInLocation("2006-01-02T15:04", v, time.Local); err != nil {
-			s.renderError(w, errors.New("invalid end time"))
-			return
-		}
 	}
 	e, err := s.svc.CreateEvent(core.EventInput{
 		Title: r.FormValue("title"), Location: r.FormValue("location"),
@@ -343,7 +347,7 @@ func (s *Server) adminEventCreate(w http.ResponseWriter, r *http.Request) {
 		IfUnconfirmed: r.FormValue("if_unconfirmed"),
 	})
 	if err != nil {
-		s.renderError(w, err)
+		s.renderAdminError(w, err)
 		return
 	}
 	http.Redirect(w, r, "/admin/event/"+e.ID, http.StatusSeeOther)
@@ -391,11 +395,8 @@ func (s *Server) adminPeople(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminPeopleTest(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.svc.SendTest(r.PathValue("id")); err != nil {
-		s.renderError(w, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/people", http.StatusSeeOther)
+	_, err := s.svc.SendTest(r.PathValue("id"))
+	s.redirectOr(w, r, err, "/admin/people")
 }
 
 func (s *Server) adminPeopleAdd(w http.ResponseWriter, r *http.Request) {
@@ -407,28 +408,17 @@ func (s *Server) adminPeopleAdd(w http.ResponseWriter, r *http.Request) {
 		channels = append(channels, core.Address{Kind: "telegram", To: v})
 	}
 	_, err := s.svc.AddPerson(r.FormValue("name"), core.TrustLevel(r.FormValue("trust")), channels)
-	if err != nil {
-		s.renderError(w, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/people", http.StatusSeeOther)
+	s.redirectOr(w, r, err, "/admin/people")
 }
 
 func (s *Server) adminProposalDecide(w http.ResponseWriter, r *http.Request) {
 	_, err := s.svc.DecideProposal(r.PathValue("id"), r.FormValue("decision") == "accept")
-	if err != nil {
-		s.renderError(w, err)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+	s.redirectOr(w, r, err, "/admin")
 }
 
 func (s *Server) adminOutboxRetry(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.svc.RetryOutbox(r.PathValue("id")); err != nil {
-		s.renderError(w, err)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+	_, err := s.svc.RetryOutbox(r.PathValue("id"))
+	s.redirectOr(w, r, err, "/admin")
 }
 
 func (s *Server) renderAdmin(w http.ResponseWriter, name string, data any) {
