@@ -871,7 +871,14 @@ func (s *Service) tickRemindersLocked(now time.Time) bool {
 		if now.Before(e.StartsAt.Add(-s.cfg.ReminderLead)) || now.After(e.StartsAt) {
 			continue
 		}
-		for _, p := range s.state.Assignees(e.ID) {
+		assignees := s.state.Assignees(e.ID)
+		if len(assignees) == 0 {
+			// Events are created first and staffed second; a tick in
+			// between must not burn the one-shot reminder on zero
+			// recipients. Leave it pending until someone is assigned.
+			continue
+		}
+		for _, p := range assignees {
 			cTok, xTok := s.linksLocked(e.ID, p.ID)
 			header := e.Title + "\n" + e.StartsAt.Format(timeFmt)
 			if e.Location != "" {
@@ -910,7 +917,13 @@ func (s *Service) tickDeadlinesLocked(now time.Time) bool {
 	changed := false
 	for i := range s.state.Events {
 		e := &s.state.Events[i]
-		if e.Status != StatusScheduled || e.ReminderSentAt.IsZero() || !e.DeadlineFiredAt.IsZero() {
+		if e.Status != StatusScheduled || !e.DeadlineFiredAt.IsZero() {
+			continue
+		}
+		if e.ReminderSentAt.IsZero() && len(s.state.Assignees(e.ID)) > 0 {
+			// Staffed but not asked yet — the reminder goes out first.
+			// Unstaffed events skip the ask entirely, and the
+			// dead-man-switch must still fire for them.
 			continue
 		}
 		if now.Before(e.StartsAt.Add(-s.cfg.DeadlineLead)) || now.After(e.StartsAt) {

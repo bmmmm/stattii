@@ -376,3 +376,52 @@ func TestWebhookSignedDispatch(t *testing.T) {
 		}
 	}
 }
+
+// Events are usually created first and staffed second. When creation already
+// falls inside the reminder window, a tick between the two must not burn the
+// one-shot reminder on zero recipients (found live 2026-08-12: the scheduler
+// ticked 6s after event.created and before the assignment — reminder.sent
+// with an empty outbox, and it never fires again).
+func TestReminderWaitsForAssignment(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	e := mustEvent(t, svc, 40*time.Hour) // inside the 48h lead, nobody assigned
+
+	svc.Tick(*clock) // the racing tick
+
+	p := mustPerson(t, svc, "ana", TrustRespond)
+	if err := svc.Assign(e.ID, p.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(clock.Add(time.Minute))
+
+	if got := fake.byPurposeTo("ana@test.local"); len(got) != 1 {
+		t.Fatalf("want the reminder to fire once staffed, got %d sends", len(got))
+	}
+}
+
+// The reminder now waits for assignees — but the dead-man-switch must not:
+// an event nobody was ever assigned to cannot be confirmed, so
+// if_unconfirmed=cancel has to auto-cancel it at the deadline regardless.
+func TestDeadmanSwitchFiresWithoutAssignees(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	start := svc.now().Add(20 * time.Hour) // inside the 24h deadline lead
+	e, err := svc.CreateEvent(EventInput{
+		Title: "Unstaffed", StartsAt: start, EndsAt: start.Add(time.Hour),
+		IfUnconfirmed: "cancel",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc.Tick(*clock)
+
+	got, err := svc.EventByID(e.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusCancelled {
+		t.Fatalf("dead-man-switch did not fire for unstaffed event: status=%s", got.Status)
+	}
+}
