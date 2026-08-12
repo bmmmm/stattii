@@ -1165,3 +1165,38 @@ func (s *Service) RetryOutbox(id string) (OutboxItem, error) {
 	}
 	return OutboxItem{}, ErrNotFound
 }
+
+// SendTest sends a test message to every channel of a person — through
+// the outbox like any real message, so the admin gets the same
+// sent/delivered proof, and with an immediate delivery attempt so the
+// result is visible right away.
+func (s *Service) SendTest(personID string) ([]OutboxItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.state.Person(personID)
+	if p == nil {
+		return nil, ErrNotFound
+	}
+	if len(p.Channels) == 0 {
+		return nil, fmt.Errorf("%s has no channels to test", p.Name)
+	}
+	ids := map[string]bool{}
+	for _, ch := range p.Channels {
+		s.enqueueLocked(OutboxItem{
+			PersonID: p.ID, Purpose: "test", Kind: ch.Kind, To: ch.To,
+			Subject: "stattii test message",
+			Body:    "This is a test message from stattii — delivery to you works.\nNothing to do, nothing to click.",
+		})
+		ids[s.state.Outbox[len(s.state.Outbox)-1].ID] = true
+	}
+	s.auditLocked("test.sent", map[string]any{"person_id": p.ID, "channels": len(p.Channels)})
+	s.tickOutboxLocked(s.now())
+	s.saveLocked()
+	var out []OutboxItem
+	for _, o := range s.state.Outbox {
+		if ids[o.ID] {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}

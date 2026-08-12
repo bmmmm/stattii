@@ -5,7 +5,9 @@ package httpapi
 import (
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/bmmmm/stattii/internal/core"
@@ -32,6 +34,7 @@ func (s *Server) registerAdminUI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/events", s.adminAuth(s.adminEventCreate))
 	mux.HandleFunc("GET /admin/people", s.adminAuth(s.adminPeople))
 	mux.HandleFunc("POST /admin/people", s.adminAuth(s.adminPeopleAdd))
+	mux.HandleFunc("POST /admin/people/{id}/test", s.adminAuth(s.adminPeopleTest))
 	mux.HandleFunc("POST /admin/proposals/{id}", s.adminAuth(s.adminProposalDecide))
 	mux.HandleFunc("POST /admin/outbox/{id}/retry", s.adminAuth(s.adminOutboxRetry))
 }
@@ -80,6 +83,60 @@ func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
 
 // ---- views ------------------------------------------------------------
 
+// adminTimelineEntry is one line in the per-recipient tracking story:
+// sent → delivered → answered, oldest first.
+type adminTimelineEntry struct {
+	At    time.Time
+	Icon  string // "→" sent · "✓" delivered/confirmed · "✗" cancelled · "!" trouble
+	Text  string
+	Bad   bool
+	Muted bool
+}
+
+// timelineFor merges one person's outbox items and responses for one
+// event into that story. Everything shown here really happened — we
+// track only our own deliveries and answer clicks, no pixels.
+func timelineFor(eventID, personID string, outbox []core.OutboxItem, responses []core.Response) []adminTimelineEntry {
+	var es []adminTimelineEntry
+	for _, o := range outbox {
+		if o.EventID != eventID || o.PersonID != personID {
+			continue
+		}
+		es = append(es, adminTimelineEntry{At: o.CreatedAt, Icon: "→", Muted: true,
+			Text: fmt.Sprintf("%s sent via %s to %s", o.Purpose, o.Kind, o.To)})
+		switch {
+		case o.Delivered():
+			es = append(es, adminTimelineEntry{At: o.DeliveredAt, Icon: "✓", Muted: true,
+				Text: fmt.Sprintf("delivered (attempt %d)", o.Attempts)})
+		case o.Attempts > 0:
+			es = append(es, adminTimelineEntry{At: o.NextAttempt, Icon: "!", Bad: true,
+				Text: fmt.Sprintf("undelivered after %d attempt(s): %s", o.Attempts, o.LastError)})
+		}
+		if !o.EscalatedAt.IsZero() {
+			es = append(es, adminTimelineEntry{At: o.EscalatedAt, Icon: "!", Bad: true, Text: "escalated to admin"})
+		}
+	}
+	for _, r := range responses {
+		if r.EventID != eventID || r.PersonID != personID {
+			continue
+		}
+		icon, bad := "✓", false
+		if r.Action == core.ActionCancel {
+			icon, bad = "✗", true
+		}
+		es = append(es, adminTimelineEntry{At: r.At, Icon: icon, Bad: bad,
+			Text: fmt.Sprintf("answered: %s via %s", r.Action, r.Via)})
+	}
+	sort.Slice(es, func(i, j int) bool { return es[i].At.Before(es[j].At) })
+	return es
+}
+
+type adminRecentMsg struct {
+	At   time.Time
+	Text string
+	Bad  bool
+}
+
 type adminOverviewData struct {
 	Ov        core.Overview
 	Hidden    int // past events not shown (use ?all=1)
@@ -87,6 +144,7 @@ type adminOverviewData struct {
 	Proposals []core.Proposal   // open only
 	Pending   []core.OutboxItem // undelivered
 	People    []core.Person
+	Recent    []adminRecentMsg // last messages, newest first
 }
 
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
@@ -109,15 +167,55 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	d.Pending = s.svc.OutboxItems(true)
+
+	// Recent messages — the tracking feed: newest first, names not ids.
+	name := map[string]string{}
+	for _, p := range d.People {
+		name[p.ID] = p.Name
+	}
+	title := map[string]string{}
+	for _, oe := range d.Ov.Events {
+		title[oe.Event.ID] = oe.Event.Title
+	}
+	items := s.svc.OutboxItems(false)
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
+	for _, o := range items {
+		if len(d.Recent) == 10 {
+			break
+		}
+		who := o.To
+		if n, ok := name[o.PersonID]; ok {
+			who = n
+		}
+		what := o.Purpose
+		if t, ok := title[o.EventID]; ok {
+			what += " · " + t
+		}
+		m := adminRecentMsg{At: o.CreatedAt}
+		switch {
+		case o.Delivered():
+			m.Text = fmt.Sprintf("%s → %s (%s): delivered", what, who, o.Kind)
+		case o.Attempts > 0:
+			m.Text = fmt.Sprintf("%s → %s (%s): UNDELIVERED after %d attempt(s)", what, who, o.Kind, o.Attempts)
+			m.Bad = true
+		default:
+			m.Text = fmt.Sprintf("%s → %s (%s): queued", what, who, o.Kind)
+		}
+		d.Recent = append(d.Recent, m)
+	}
 	s.renderAdmin(w, "admin_overview", d)
+}
+
+type adminTrack struct {
+	A       core.OverviewAssignee
+	Entries []adminTimelineEntry
 }
 
 type adminEventData struct {
 	Ev          core.OverviewEvent
-	Responses   []core.Response
+	Tracks      []adminTrack
 	Propagation core.PropagationStatus
 	People      []core.Person
-	Links       map[string]string // set after "links" action via query params
 }
 
 func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +232,12 @@ func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
 		s.renderError(w, core.ErrNotFound)
 		return
 	}
-	d := adminEventData{Ev: *found, Responses: s.svc.Responses(id), People: s.svc.People()}
+	d := adminEventData{Ev: *found, People: s.svc.People()}
+	outbox := s.svc.OutboxItems(false)
+	responses := s.svc.Responses(id)
+	for _, a := range found.Assignees {
+		d.Tracks = append(d.Tracks, adminTrack{A: a, Entries: timelineFor(id, a.PersonID, outbox, responses)})
+	}
 	d.Propagation, _ = s.svc.Propagation(id)
 	s.renderAdmin(w, "admin_event", d)
 }
@@ -216,15 +319,46 @@ type adminPeopleData struct {
 type adminPerson struct {
 	core.Person
 	PortalURL string
+	LastMsg   string // most recent message to this person, any event
+	LastBad   bool
 }
 
 func (s *Server) adminPeople(w http.ResponseWriter, r *http.Request) {
 	var d adminPeopleData
+	items := s.svc.OutboxItems(false)
 	for _, p := range s.svc.People() {
 		u, _ := s.svc.PersonPortalURL(p.ID)
-		d.People = append(d.People, adminPerson{Person: p, PortalURL: u})
+		ap := adminPerson{Person: p, PortalURL: u}
+		var last *core.OutboxItem
+		for i := range items {
+			if items[i].PersonID == p.ID && (last == nil || items[i].CreatedAt.After(last.CreatedAt)) {
+				last = &items[i]
+			}
+		}
+		if last != nil {
+			switch {
+			case last.Delivered():
+				ap.LastMsg = fmt.Sprintf("last message: %s via %s, delivered %s",
+					last.Purpose, last.Kind, last.DeliveredAt.Local().Format("02 Jan 15:04"))
+			case last.Attempts > 0:
+				ap.LastMsg = fmt.Sprintf("last message: %s via %s, UNDELIVERED (%d attempts)",
+					last.Purpose, last.Kind, last.Attempts)
+				ap.LastBad = true
+			default:
+				ap.LastMsg = fmt.Sprintf("last message: %s via %s, queued", last.Purpose, last.Kind)
+			}
+		}
+		d.People = append(d.People, ap)
 	}
 	s.renderAdmin(w, "admin_people", d)
+}
+
+func (s *Server) adminPeopleTest(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.svc.SendTest(r.PathValue("id")); err != nil {
+		s.renderError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/people", http.StatusSeeOther)
 }
 
 func (s *Server) adminPeopleAdd(w http.ResponseWriter, r *http.Request) {

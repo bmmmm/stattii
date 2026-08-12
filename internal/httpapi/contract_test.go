@@ -49,6 +49,8 @@ func TestAdminAPIContract(t *testing.T) {
 		t.Fatalf("person payload: %+v", created)
 	}
 	step(200, "GET", "/api/v1/people", "")
+	step(200, "POST", "/api/v1/people/"+created.Person.ID+"/test-message", "")
+	step(404, "POST", "/api/v1/people/pe_nope/test-message", "")
 
 	// events: create → list → get → 404 for unknown
 	start := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)

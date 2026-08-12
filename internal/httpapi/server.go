@@ -96,32 +96,33 @@ func (s *Server) PublicHandler() http.Handler {
 func (s *Server) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	api := map[string]http.HandlerFunc{
-		"GET /api/v1/events":                  s.listEvents,
-		"POST /api/v1/events":                 s.createEvent,
-		"GET /api/v1/events/{id}":             s.getEvent,
-		"POST /api/v1/events/{id}/confirm":    s.confirmEvent,
-		"POST /api/v1/events/{id}/cancel":     s.cancelEvent,
-		"POST /api/v1/events/{id}/move":       s.moveEvent,
-		"POST /api/v1/events/{id}/reinstate":  s.reinstateEvent,
-		"GET /api/v1/outbox":                  s.listOutbox,
-		"POST /api/v1/outbox/{id}/retry":      s.retryOutbox,
-		"POST /api/v1/events/{id}/links":      s.makeLinks,
-		"GET /api/v1/events/{id}/responses":   s.eventResponses,
-		"GET /api/v1/events/{id}/propagation": s.propagation,
-		"GET /api/v1/people":                  s.listPeople,
-		"POST /api/v1/people":                 s.createPerson,
-		"POST /api/v1/assignments":            s.assign,
-		"GET /api/v1/proposals":               s.listProposals,
-		"POST /api/v1/proposals/{id}/decide":  s.decideProposal,
-		"GET /api/v1/broadcasts":              s.listBroadcasts,
-		"POST /api/v1/broadcasts":             s.createBroadcast,
-		"DELETE /api/v1/broadcasts/{id}":      s.deleteBroadcast,
-		"GET /api/v1/webhooks":                s.listWebhooks,
-		"POST /api/v1/webhooks":               s.createWebhook,
-		"DELETE /api/v1/webhooks/{id}":        s.deleteWebhook,
-		"GET /api/v1/audit":                   s.audit,
-		"GET /api/v1/overview":                s.overview,
-		"POST /api/v1/tick":                   s.tick,
+		"GET /api/v1/events":                    s.listEvents,
+		"POST /api/v1/events":                   s.createEvent,
+		"GET /api/v1/events/{id}":               s.getEvent,
+		"POST /api/v1/events/{id}/confirm":      s.confirmEvent,
+		"POST /api/v1/events/{id}/cancel":       s.cancelEvent,
+		"POST /api/v1/events/{id}/move":         s.moveEvent,
+		"POST /api/v1/events/{id}/reinstate":    s.reinstateEvent,
+		"GET /api/v1/outbox":                    s.listOutbox,
+		"POST /api/v1/outbox/{id}/retry":        s.retryOutbox,
+		"POST /api/v1/events/{id}/links":        s.makeLinks,
+		"GET /api/v1/events/{id}/responses":     s.eventResponses,
+		"GET /api/v1/events/{id}/propagation":   s.propagation,
+		"GET /api/v1/people":                    s.listPeople,
+		"POST /api/v1/people":                   s.createPerson,
+		"POST /api/v1/people/{id}/test-message": s.testMessage,
+		"POST /api/v1/assignments":              s.assign,
+		"GET /api/v1/proposals":                 s.listProposals,
+		"POST /api/v1/proposals/{id}/decide":    s.decideProposal,
+		"GET /api/v1/broadcasts":                s.listBroadcasts,
+		"POST /api/v1/broadcasts":               s.createBroadcast,
+		"DELETE /api/v1/broadcasts/{id}":        s.deleteBroadcast,
+		"GET /api/v1/webhooks":                  s.listWebhooks,
+		"POST /api/v1/webhooks":                 s.createWebhook,
+		"DELETE /api/v1/webhooks/{id}":          s.deleteWebhook,
+		"GET /api/v1/audit":                     s.audit,
+		"GET /api/v1/overview":                  s.overview,
+		"POST /api/v1/tick":                     s.tick,
 	}
 	for pattern, h := range api {
 		mux.HandleFunc(pattern, s.auth(h))
@@ -408,6 +409,11 @@ func (s *Server) createPerson(w http.ResponseWriter, r *http.Request) {
 	}
 	portal, _ := s.svc.PersonPortalURL(p.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{"person": p, "portal_url": portal})
+}
+
+func (s *Server) testMessage(w http.ResponseWriter, r *http.Request) {
+	items, err := s.svc.SendTest(r.PathValue("id"))
+	respond(w, items, err, http.StatusOK)
 }
 
 func (s *Server) assign(w http.ResponseWriter, r *http.Request) {

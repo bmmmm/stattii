@@ -229,11 +229,16 @@ func cmdEvent(args []string) error {
 
 func cmdPerson(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii person list|add")
+		return fmt.Errorf("usage: stattii person list|add|test")
 	}
 	switch args[0] {
 	case "list":
 		return api("GET", "/api/v1/people", nil)
+	case "test":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: stattii person test <person-id>")
+		}
+		return api("POST", "/api/v1/people/"+args[1]+"/test-message", nil)
 	case "add":
 		fs := flag.NewFlagSet("person add", flag.ExitOnError)
 		name := fs.String("name", "", "name (required)")

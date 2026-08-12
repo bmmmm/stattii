@@ -426,6 +426,31 @@ func TestDeadmanSwitchFiresWithoutAssignees(t *testing.T) {
 	}
 }
 
+func TestSendTestGoesThroughOutbox(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, _ := newTestService(t, fake)
+	p := mustPerson(t, svc, "ana", TrustRespond)
+
+	items, err := svc.SendTest(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Purpose != "test" || !items[0].Delivered() {
+		t.Fatalf("test message not delivered through the outbox: %+v", items)
+	}
+	if got := fake.byPurposeTo("ana@test.local"); len(got) != 1 || !strings.Contains(got[0].Subject, "test") {
+		t.Fatalf("notifier saw %+v", got)
+	}
+
+	if _, err := svc.SendTest("pe_nope"); err == nil {
+		t.Fatal("unknown person must error")
+	}
+	noChan, _ := svc.AddPerson("bob", TrustRespond, nil)
+	if _, err := svc.SendTest(noChan.ID); err == nil {
+		t.Fatal("person without channels must error")
+	}
+}
+
 func TestOverviewJoinsAssignmentsAndResponses(t *testing.T) {
 	fake := &fakeNotifier{}
 	svc, clock := newTestService(t, fake)
