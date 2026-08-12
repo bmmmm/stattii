@@ -69,9 +69,11 @@ sandbox they may need a bypass; CI has no sandbox and is fine.
 
 - Config precedence: explicit `serve` flags > `config.json` > `STATTII_*` env.
   Config files are JSON with full-line `//` comments; unknown keys fail loudly.
-- Commits as `bmmmm <hi@brtsz.de>`; tag releases `vX.Y.Z` and push tags to
-  `origin` (the private Forgejo). No GitHub mirror yet — `.github/` CI +
-  dependabot are pre-staged for a later `add-github-mirror`.
+- Commits as `bmmmm <hi@brtsz.de>`; tag releases `vX.Y.Z`. Dual-remote
+  since 2026-08-12: push branches AND tags to both `origin` (the private
+  Forgejo) and `github` (public mirror, pre-push leak gate installed).
+  Dependabot/CodeQL PRs on GitHub are signals only — fix locally, push to
+  both remotes, never merge in the GitHub UI (`dependabot-adopt` skill).
 - Time handling: state is UTC; recipient-facing formatting uses the event's
   stored time. `datetime-local` form inputs parse in server-local time.
 
