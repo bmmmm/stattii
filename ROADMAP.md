@@ -36,8 +36,11 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
 
 ## Later / maybe
 
-- Web dashboard as a second head over the API (the API already carries
-  everything; the dashboard must stay a thin skin).
+- ~~Web dashboard~~ — done 2026-08-12 as `/admin` on the dedicated admin
+  listener (`admin_listen`, default loopback): server-rendered thin skin
+  over the existing service methods, cookie login with the admin token.
+  Same cut moved `/api/v1` off the public listener entirely and added
+  `GET /api/v1/overview` + `stattii overview`.
 - Recurring events / series sugar (expand-on-create; ICS stays RRULE-free).
 - SQLite store backend behind the `Store` interface — only if volume ever
   demands it (a few hundred events/year will not).

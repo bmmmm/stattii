@@ -17,7 +17,7 @@ people stood in front of a locked door. That failure mode drives the design.
 |-------|------|
 | `internal/core` | domain types, JSON store (`state.json` atomic + `audit.jsonl` append-only), `Service` (every mutation audits + persists under one mutex), scheduler `Tick` |
 | `internal/channel` | `Sender` interface: email (SMTP), telegram (send + `getUpdates` poller for inline-button callbacks), webhook |
-| `internal/httpapi` | public token surface (`/a/`, `/p/`, `/feed.ics`) + `/api/v1` behind bearer auth, rate limiter |
+| `internal/httpapi` | TWO muxes: public token surface (`/a/`, `/p/`, `/feed.ics`, rate limiter) and the admin listener (`/api/v1` behind bearer auth + `/admin` web UI behind cookie login) |
 | `internal/ics` | ICS feed generation only — parsing foreign feeds is out of scope |
 | root `package main` | `serve` + thin CLI client over the REST API; `config.go` loads `config.json` |
 
@@ -35,6 +35,9 @@ people stood in front of a locked door. That failure mode drives the design.
    shipped blanks (`config.example.json`, `examples/`) carry placeholders
    only, and `TestShippedConfigBlanksParse` keeps them valid.
 7. UI strings are English (owner decision 2026-08-12).
+8. **Management routes exist only on the admin listener.** `PublicHandler`
+   carries the token surface and nothing else — never register `/api/v1`
+   or `/admin` there. Guarded by `TestAdminAPIAbsentFromPublic`.
 
 ## Build & test
 

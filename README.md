@@ -29,7 +29,7 @@ go build .
 ./stattii serve --data ./data --base-url https://events.example.org
 # admin token is generated at ./data/admin-token on first run
 
-export STATTII_URL=http://localhost:8788
+export STATTII_URL=http://127.0.0.1:8789   # the ADMIN listener, not the public one
 export STATTII_TOKEN=$(cat ./data/admin-token)
 
 stattii person add --name "Ana" --trust respond --email ana@example.org
@@ -99,27 +99,56 @@ explicit `serve` flags > `config.json` > `STATTII_*` environment variables.
 Credentials go either directly into the gitignored file or stay in the
 environment via `smtp_pass_env` / `token_env` — your choice.
 
-Flags on `serve`: `--config`, `--listen`, `--data`, `--base-url`,
-`--cal-name`, `--reminder-lead`, `--deadline-lead`, `--escalate-after`,
-`--tick`.
+Flags on `serve`: `--config`, `--listen`, `--admin-listen`, `--data`,
+`--base-url`, `--cal-name`, `--reminder-lead`, `--deadline-lead`,
+`--escalate-after`, `--tick`, `--trusted-proxies`.
 
 Environment fallbacks (all optional once `config.json` exists):
 
 | Variable | Purpose |
 |----------|---------|
-| `STATTII_ADMIN_TOKEN` | bearer token for `/api/v1` (default: generated at `<data>/admin-token`) |
+| `STATTII_ADMIN_TOKEN` | bearer token for `/api/v1` + web admin login (default: generated at `<data>/admin-token`) |
+| `STATTII_ADMIN_LISTEN` | admin listener address (default `127.0.0.1:8789`) |
+| `STATTII_TRUSTED_PROXIES` | CIDRs of reverse proxies for real-client-IP rate limiting |
 | `STATTII_SMTP_HOST/PORT/USER/PASS/FROM` | email channel |
 | `STATTII_TELEGRAM_TOKEN` | Telegram bot channel (addresses are chat ids) |
 | `STATTII_ADMIN_NOTIFY` | escalation target, `kind:address` |
 | `STATTII_URL`, `STATTII_TOKEN` | used by the CLI client |
 
+## Admin surface
+
+Management is a **separate listener** (`--admin-listen` / `admin_listen`,
+default `127.0.0.1:8789`): the public listener carries only the token
+pages and the feed, so no reverse-proxy misconfiguration can ever expose
+management routes. On the admin listener live:
+
+- **`/admin`** — a web admin (server-rendered, zero JS): every event with
+  its responsible people and who clicked what, plus create / confirm /
+  cancel / move / reinstate / assign, proposal decisions and outbox
+  retries. Log in once with the admin token; it is kept in an HttpOnly
+  SameSite=Strict cookie.
+- **`/api/v1`** — the REST API (bearer auth) the CLI uses, including
+  `GET /api/v1/overview` (rendered by `stattii overview`).
+
+The default binds to loopback. To reach it remotely, pick your own
+boundary — an SSH tunnel is the zero-config option:
+
+```sh
+ssh -L 8789:127.0.0.1:8789 your-server
+# then browse http://127.0.0.1:8789/admin
+```
+
+or bind it into a VPN/private network (`admin_listen: "10.x.x.x:8789"`),
+or put an internally-restricted reverse proxy in front. Behind a proxy,
+set `trusted_proxies` so the public rate limiter sees real client IPs.
+
 ## API
 
 Everything the CLI does is plain REST under `/api/v1` (bearer auth):
 events (`create/confirm/cancel/move/links/responses/propagation`), people,
-assignments, broadcasts, webhooks, proposals, audit. Webhook payloads are
-signed: `X-Stattii-Signature: sha256=<hex hmac of body>` with the
-per-subscription secret returned on registration.
+assignments, broadcasts, webhooks, proposals, audit, overview. Webhook
+payloads are signed: `X-Stattii-Signature: sha256=<hex hmac of body>` with
+the per-subscription secret returned on registration.
 
 Public surface (rate-limited, token-scoped): `/a/<token>`, `/p/<token>`,
 `/feed.ics`, `/healthz`. Note calendar apps poll ICS feeds slowly (Google:
