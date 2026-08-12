@@ -16,17 +16,22 @@ import (
 // Unknown keys are rejected loudly so typos cannot be silently ignored.
 // Precedence at startup: explicit serve flags > config.json > STATTII_* env.
 type fileConfig struct {
-	Listen        string         `json:"listen"`
-	BaseURL       string         `json:"base_url"`
-	CalName       string         `json:"cal_name"`
-	DataDir       string         `json:"data_dir"`
-	ReminderLead  string         `json:"reminder_lead"`
-	DeadlineLead  string         `json:"deadline_lead"`
-	EscalateAfter string         `json:"escalate_after"`
-	Tick          string         `json:"tick"`
-	AdminNotify   string         `json:"admin_notify"` // "email:addr" | "telegram:chat-id"
-	Email         emailConfig    `json:"email"`
-	Telegram      telegramConfig `json:"telegram"`
+	Listen        string `json:"listen"`
+	BaseURL       string `json:"base_url"`
+	CalName       string `json:"cal_name"`
+	DataDir       string `json:"data_dir"`
+	ReminderLead  string `json:"reminder_lead"`
+	DeadlineLead  string `json:"deadline_lead"`
+	EscalateAfter string `json:"escalate_after"`
+	Tick          string `json:"tick"`
+	AdminNotify   string `json:"admin_notify"` // "email:addr" | "telegram:chat-id"
+	// Comma-separated CIDRs of reverse proxies in front of stattii. When the
+	// TCP peer matches, the rate-limit client IP comes from X-Forwarded-For
+	// (rightmost hop not in this list) — otherwise everyone behind the proxy
+	// shares one bucket. Empty = direct exposure, header ignored.
+	TrustedProxies string         `json:"trusted_proxies"`
+	Email          emailConfig    `json:"email"`
+	Telegram       telegramConfig `json:"telegram"`
 }
 
 type emailConfig struct {

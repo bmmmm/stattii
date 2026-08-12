@@ -31,7 +31,7 @@ func newTestServer(t *testing.T) (*core.Service, http.Handler) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return svc, httpapi.New(svc, testToken, "test").Handler()
+	return svc, httpapi.New(svc, testToken, "test", nil).Handler()
 }
 
 func do(t *testing.T, h http.Handler, method, path, token string, body string) *httptest.ResponseRecorder {

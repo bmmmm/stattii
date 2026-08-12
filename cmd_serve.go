@@ -31,6 +31,7 @@ func cmdServe(args []string) {
 	deadlineLead := fs.Duration("deadline-lead", 24*time.Hour, "unanswered this close to start fires deadline.passed")
 	escalateAfter := fs.Duration("escalate-after", 10*time.Minute, "undelivered outbox items page the admin after this long")
 	tickEvery := fs.Duration("tick", time.Minute, "scheduler interval")
+	trustedProxies := fs.String("trusted-proxies", "", "comma-separated CIDRs of reverse proxies; rate-limit client IP then comes from X-Forwarded-For")
 	fs.Parse(args)
 
 	set := map[string]bool{}
@@ -71,6 +72,16 @@ func cmdServe(args []string) {
 	}
 	if !set["tick"] && fc.Tick != "" {
 		*tickEvery = parseDur("tick", fc.Tick)
+	}
+	if !set["trusted-proxies"] && fc.TrustedProxies != "" {
+		*trustedProxies = fc.TrustedProxies
+	}
+	if *trustedProxies == "" {
+		*trustedProxies = os.Getenv("STATTII_TRUSTED_PROXIES")
+	}
+	trusted, err := httpapi.ParseTrustedProxies(*trustedProxies)
+	if err != nil {
+		log.Fatalf("stattii: %v", err)
 	}
 
 	if *baseURL == "" {
@@ -119,7 +130,7 @@ func cmdServe(args []string) {
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           httpapi.New(svc, adminToken, *calName).Handler(),
+		Handler:           httpapi.New(svc, adminToken, *calName, trusted).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

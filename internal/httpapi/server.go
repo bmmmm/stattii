@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -22,17 +23,52 @@ import (
 )
 
 type Server struct {
-	svc        *core.Service
-	adminToken string
-	limiter    *limiter
-	calName    string
+	svc            *core.Service
+	adminToken     string
+	limiter        *limiter
+	calName        string
+	trustedProxies []*net.IPNet
 }
 
-func New(svc *core.Service, adminToken, calName string) *Server {
+// New builds the HTTP surface. trustedProxies lists the reverse proxies in
+// front of the server (CIDRs); requests arriving from one of them have their
+// client IP taken from X-Forwarded-For instead of the socket peer — without
+// this every visitor behind the proxy shares one rate-limit bucket.
+func New(svc *core.Service, adminToken, calName string, trustedProxies []*net.IPNet) *Server {
 	if calName == "" {
 		calName = "stattii"
 	}
-	return &Server{svc: svc, adminToken: adminToken, limiter: newLimiter(30, time.Minute), calName: calName}
+	return &Server{svc: svc, adminToken: adminToken, limiter: newLimiter(30, time.Minute),
+		calName: calName, trustedProxies: trustedProxies}
+}
+
+// ParseTrustedProxies parses a comma-separated list of CIDRs or bare IPs.
+// Empty input means no proxy is trusted (X-Forwarded-For is ignored).
+func ParseTrustedProxies(s string) ([]*net.IPNet, error) {
+	var nets []*net.IPNet
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !strings.Contains(part, "/") {
+			ip := net.ParseIP(part)
+			if ip == nil {
+				return nil, fmt.Errorf("trusted_proxies: %q is not an IP or CIDR", part)
+			}
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			part = fmt.Sprintf("%s/%d", ip, bits)
+		}
+		_, n, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("trusted_proxies: %w", err)
+		}
+		nets = append(nets, n)
+	}
+	return nets, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -100,16 +136,50 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) public(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			ip = r.RemoteAddr
-		}
-		if !s.limiter.allow(ip) {
+		if !s.limiter.allow(s.clientIP(r)) {
 			http.Error(w, "too many requests — try again in a minute", http.StatusTooManyRequests)
 			return
 		}
 		next(w, r)
 	}
+}
+
+// clientIP is the rate-limit key. When the socket peer is a trusted proxy,
+// X-Forwarded-For is walked right to left and the first hop we do not run
+// ourselves is the client — anything further left is client-supplied and
+// spoofable. Otherwise the peer address is used as-is.
+func (s *Server) clientIP(r *http.Request) string {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	if !s.trustedProxy(ip) {
+		return ip
+	}
+	var hops []string
+	for _, v := range r.Header.Values("X-Forwarded-For") {
+		hops = append(hops, strings.Split(v, ",")...)
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if hop != "" && !s.trustedProxy(hop) {
+			return hop
+		}
+	}
+	return ip
+}
+
+func (s *Server) trustedProxy(ip string) bool {
+	p := net.ParseIP(ip)
+	if p == nil {
+		return false
+	}
+	for _, n := range s.trustedProxies {
+		if n.Contains(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- public pages ---------------------------------------------------------

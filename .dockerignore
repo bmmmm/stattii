@@ -1,0 +1,10 @@
+.git
+.github
+.claude
+data/
+tmp/
+config.json
+stattii
+examples/
+*.md
+Dockerfile

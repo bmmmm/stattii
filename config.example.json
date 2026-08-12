@@ -35,6 +35,13 @@
   // "telegram:<chat-id>".
   "admin_notify": "email:you@example.org",
 
+  // Reverse proxies in front of stattii (comma-separated CIDRs or IPs).
+  // When the TCP peer matches, the rate limiter takes the client IP from
+  // X-Forwarded-For (rightmost hop not in this list) — otherwise everyone
+  // behind the proxy shares one bucket. Leave empty for direct exposure;
+  // the header is then ignored (it is client-spoofable).
+  "trusted_proxies": "",
+
   // Outbound email (the primary channel). See examples/config.gmail.json
   // and examples/config.generic-smtp.json for filled-in variants.
   "email": {
