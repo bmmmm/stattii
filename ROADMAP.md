@@ -24,7 +24,7 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
    bind mount under `~/docker/stattii/` (nightly restic sweep). → issue #2
 2. ~~**Email go-live**~~ — done 2026-08-12: Gmail app password, reminder +
    cancellation round-trip delivered cross-provider (Gmail → brtsz.de),
-   confirm-via-link proven end to end.
+   confirm-via-link proven end to end. Spam placement: inbox.
 3. **Real data**: enter the actual people (+ trust levels) and the real
    event series via CLI/API; define broadcast targets (mailing list,
    website webhook) for the propagation fan-out.
