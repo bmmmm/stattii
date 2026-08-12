@@ -146,6 +146,11 @@ func cmdServe(args []string) {
 		Addr:              *listen,
 		Handler:           api.PublicHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Slow-body POSTs and never-reading feed clients must not pin
+		// goroutines forever.
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: time.Minute,
+		IdleTimeout:  2 * time.Minute,
 	}
 	// The admin surface is a separate listener on purpose: the public
 	// server cannot route to it, so a proxy misconfiguration cannot
@@ -153,6 +158,9 @@ func cmdServe(args []string) {
 	adminSrv := &http.Server{
 		Handler:           api.AdminHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      time.Minute,
+		IdleTimeout:       2 * time.Minute,
 	}
 	adminLn, err := listenAdmin(*adminListen)
 	if err != nil {
@@ -209,7 +217,12 @@ func listenAdmin(addr string) (net.Listener, error) {
 	if err := os.Remove(addr); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
+	// The socket must never be world-connectable, not even between Listen
+	// and Chmod — narrow the umask around the bind. Startup is
+	// single-threaded, so the process-wide umask flip is safe here.
+	old := syscall.Umask(0o117)
 	ln, err := net.Listen("unix", addr)
+	syscall.Umask(old)
 	if err != nil {
 		return nil, err
 	}

@@ -118,6 +118,11 @@ func (j *JSONStore) ReadAudit(limit int) ([]AuditEntry, error) {
 			continue // a torn last line after a crash is expected, skip it
 		}
 		entries = append(entries, e)
+		// The log is append-only and never rotated; keeping only the newest
+		// `limit` while scanning bounds memory however large it grows.
+		if limit > 0 && len(entries) > 2*limit {
+			entries = append(entries[:0], entries[len(entries)-limit:]...)
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err

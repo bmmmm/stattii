@@ -104,3 +104,31 @@ func TestAdminUIActions(t *testing.T) {
 		t.Fatal("unauthenticated action mutated state")
 	}
 }
+
+func TestAdminLoginThrottledAndAudited(t *testing.T) {
+	svc, _, admin := newTestServer(t)
+	throttled := false
+	for range 8 {
+		w := doForm(t, admin, "/admin/login", url.Values{"token": {"wrong"}}, nil)
+		if w.Code == http.StatusTooManyRequests {
+			throttled = true
+			break
+		}
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong token: got %d", w.Code)
+		}
+	}
+	if !throttled {
+		t.Fatal("8 wrong logins never throttled")
+	}
+	entries, err := svc.Audit(50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Kind == "admin.login_failed" {
+			return
+		}
+	}
+	t.Fatal("no admin.login_failed audit entry")
+}

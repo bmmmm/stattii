@@ -36,6 +36,10 @@ type ImportReport struct {
 	Vanished  []string `json:"vanished,omitempty"`
 	Conflicts []string `json:"conflicts,omitempty"` // cancelled here, still/again in the feed
 	Skipped   []string `json:"skipped,omitempty"`   // series the importer could not expand
+	// Suspect marks a fetch whose result smells like a broken feed (zero
+	// occurrences while imported events exist) — its vanished sweep was
+	// skipped and the report should not be trusted as decision input.
+	Suspect bool `json:"suspect,omitempty"`
 }
 
 // FetchCalendar downloads the configured source feed and syncs it.
@@ -60,9 +64,15 @@ func (s *Service) FetchCalendar(ctx context.Context) (ImportReport, error) {
 	if resp.StatusCode != http.StatusOK {
 		return ImportReport{}, fmt.Errorf("fetch calendar: HTTP %d", resp.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	// Read one byte past the cap: a feed that outgrows it must fail loudly.
+	// Truncating mid-VEVENT would report the cut-off tail as "vanished".
+	const maxFeed = 5 << 20
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxFeed+1))
 	if err != nil {
 		return ImportReport{}, err
+	}
+	if len(raw) > maxFeed {
+		return ImportReport{}, fmt.Errorf("fetch calendar: feed exceeds %d bytes", maxFeed)
 	}
 
 	events, skParse := icsimport.Parse(raw)
@@ -73,9 +83,15 @@ func (s *Service) FetchCalendar(ctx context.Context) (ImportReport, error) {
 }
 
 // SetCalendarClient overrides the HTTP client used for feed fetches (tests).
-func (s *Service) SetCalendarClient(c *http.Client) { s.calendarHTTP = c }
+func (s *Service) SetCalendarClient(c *http.Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calendarHTTP = c
+}
 
 func (s *Service) calendarClient() *http.Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.calendarHTTP != nil {
 		return s.calendarHTTP
 	}
@@ -153,6 +169,16 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 		}
 		if e.StartsAt.Before(s.now()) || e.StartsAt.After(until) {
 			continue // outside this fetch's window — no statement possible
+		}
+		if len(occs) == 0 {
+			// An empty result against a non-empty local window smells like
+			// a broken feed, not a cleared calendar. The vanished list is
+			// the operator's decision input — refuse to draw conclusions.
+			rep.Suspect = true
+			rep.Skipped = append(rep.Skipped,
+				"feed returned zero occurrences while imported events exist — vanished check skipped")
+			s.auditLocked("import.suspect", map[string]any{"reason": "zero occurrences"})
+			break
 		}
 		rep.Vanished = append(rep.Vanished,
 			fmt.Sprintf("%s (%s)", e.Title, e.StartsAt.Format("Mon, 02 Jan 15:04")))

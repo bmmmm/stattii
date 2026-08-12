@@ -3,6 +3,7 @@
 package channel
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,7 +29,17 @@ func (w *Webhook) Send(to string, m core.Message) error {
 	body := m.Body
 	if len(m.Headers) == 0 {
 		// Broadcast target: wrap subject+body in a minimal JSON envelope.
-		body = fmt.Sprintf(`{"subject":%q,"body":%q}`, m.Subject, m.Body)
+		// json.Marshal (not %q, which emits Go escapes like \x01 that are
+		// invalid JSON) so arbitrary subject/body content stays valid JSON.
+		envelope := struct {
+			Subject string `json:"subject"`
+			Body    string `json:"body"`
+		}{Subject: m.Subject, Body: m.Body}
+		raw, err := json.Marshal(envelope)
+		if err != nil {
+			return fmt.Errorf("webhook: encode envelope: %w", err)
+		}
+		body = string(raw)
 	}
 	req, err := http.NewRequest(http.MethodPost, to, strings.NewReader(body))
 	if err != nil {

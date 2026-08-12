@@ -97,7 +97,19 @@ func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {
 }
 
 // SetClock overrides the clock, for tests.
-func (s *Service) SetClock(now func() time.Time) { s.now = now }
+func (s *Service) SetClock(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
+}
+
+// NoteLoginFailure records a failed admin-UI login in the audit trail —
+// the admin listener has no other failed-auth signal.
+func (s *Service) NoteLoginFailure(remote string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.auditLocked("admin.login_failed", map[string]any{"remote": remote})
+}
 
 var (
 	ErrNotFound  = errors.New("not found")
@@ -619,6 +631,15 @@ func (s *Service) personByPortalLocked(token string) *Person {
 	return nil
 }
 
+func (s *Service) assignedLocked(eventID, personID string) bool {
+	for _, a := range s.state.Assignments {
+		if a.EventID == eventID && a.PersonID == personID {
+			return true
+		}
+	}
+	return false
+}
+
 // PortalRespond is the yes/no of an assigned person — allowed on every
 // trust level.
 func (s *Service) PortalRespond(token, eventID string, action ActionKind) error {
@@ -628,14 +649,7 @@ func (s *Service) PortalRespond(token, eventID string, action ActionKind) error 
 	if p == nil {
 		return ErrNotFound
 	}
-	assigned := false
-	for _, a := range s.state.Assignments {
-		if a.EventID == eventID && a.PersonID == p.ID {
-			assigned = true
-			break
-		}
-	}
-	if !assigned {
+	if !s.assignedLocked(eventID, p.ID) {
 		return ErrNotFound
 	}
 	var err error
@@ -677,6 +691,14 @@ func (s *Service) PortalSubmit(token, kind, eventID, title, note string, start, 
 	case "cancel":
 	default:
 		return false, fmt.Errorf("unknown kind %q", kind)
+	}
+	// Cancel and move target an existing event: like PortalRespond, the
+	// portal holder must be assigned to it — on every trust level. Without
+	// this a single direct-trust token could cancel ANY event by id.
+	if kind == "cancel" || kind == "move" {
+		if !s.assignedLocked(eventID, p.ID) {
+			return false, ErrNotFound
+		}
 	}
 	switch p.Trust {
 	case TrustDirect:

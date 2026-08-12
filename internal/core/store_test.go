@@ -82,3 +82,28 @@ func TestAuditAppendAndTornLine(t *testing.T) {
 		t.Fatalf("limit wrong: %+v", last2)
 	}
 }
+
+func TestReadAuditLimitReturnsNewest(t *testing.T) {
+	st, err := NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 10 {
+		if err := st.Audit("k", map[string]int{"i": i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := st.ReadAudit(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 entries, got %d", len(got))
+	}
+	// The newest three survive the bounded scan, in order.
+	for i, want := range []string{`{"i":7}`, `{"i":8}`, `{"i":9}`} {
+		if string(got[i].Data) != want {
+			t.Fatalf("entry %d = %s, want %s", i, got[i].Data, want)
+		}
+	}
+}

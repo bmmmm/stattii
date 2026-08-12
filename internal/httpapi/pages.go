@@ -3,8 +3,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"errors"
 	"html/template"
+	"log"
 	"net/http"
 
 	"github.com/bmmmm/stattii/internal/core"
@@ -139,11 +141,25 @@ details{margin:.5rem 0}
 </body></html>{{end}}
 `))
 
-func (s *Server) render(w http.ResponseWriter, name string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.ExecuteTemplate(w, name, data); err != nil {
+// renderTo executes into a buffer first: a template failure mid-render must
+// become a clean 500, not corrupt HTML behind an already-written status.
+func renderTo(w http.ResponseWriter, t *template.Template, name string, status int, data any) {
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, name, data); err != nil {
+		log.Printf("stattii: render %s: %v", name, err)
 		http.Error(w, "template error", http.StatusInternalServerError)
+		return
 	}
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
+	buf.WriteTo(w)
+}
+
+func (s *Server) render(w http.ResponseWriter, name string, data any) {
+	renderTo(w, tmpl, name, http.StatusOK, data)
 }
 
 func (s *Server) renderError(w http.ResponseWriter, err error) {
@@ -158,12 +174,12 @@ func (s *Server) renderError(w http.ResponseWriter, err error) {
 		status = http.StatusForbidden
 	case errors.Is(err, core.ErrNotFound):
 	default:
+		// Everything reaching this branch is validation text written for
+		// recipients ("title is required") — keep it, but log it so a
+		// future internal error leaking through gets noticed.
+		log.Printf("stattii: public error page: %v", err)
 		msg = err.Error()
 		status = http.StatusBadRequest
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	if terr := tmpl.ExecuteTemplate(w, "error", msg); terr != nil {
-		http.Error(w, msg, status)
-	}
+	renderTo(w, tmpl, "error", status, msg)
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sort"
 	"time"
@@ -49,21 +50,34 @@ func (s *Server) adminAuthed(r *http.Request) bool {
 func (s *Server) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.adminAuthed(r) {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusUnauthorized)
-			adminTmpl.ExecuteTemplate(w, "admin_login", nil)
+			renderTo(w, adminTmpl, "admin_login", http.StatusUnauthorized, nil)
 			return
 		}
 		next(w, r)
 	}
 }
 
+// loginKey buckets login attempts by peer address; unix-socket peers have
+// none and share one bucket.
+func loginKey(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && host != "" {
+		return host
+	}
+	if r.RemoteAddr != "" {
+		return r.RemoteAddr
+	}
+	return "local"
+}
+
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.loginLimiter.allow(loginKey(r)) {
+		http.Error(w, "too many attempts — try again in a minute", http.StatusTooManyRequests)
+		return
+	}
 	tok := r.FormValue("token")
 	if s.adminToken == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(s.adminToken)) != 1 {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusUnauthorized)
-		adminTmpl.ExecuteTemplate(w, "admin_login", "That token is not right.")
+		s.svc.NoteLoginFailure(loginKey(r))
+		renderTo(w, adminTmpl, "admin_login", http.StatusUnauthorized, "That token is not right.")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -418,8 +432,5 @@ func (s *Server) adminOutboxRetry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderAdmin(w http.ResponseWriter, name string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := adminTmpl.ExecuteTemplate(w, name, data); err != nil {
-		http.Error(w, "template error", http.StatusInternalServerError)
-	}
+	renderTo(w, adminTmpl, name, http.StatusOK, data)
 }

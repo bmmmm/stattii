@@ -198,3 +198,91 @@ func TestAdminAPIAbsentFromPublic(t *testing.T) {
 		}
 	}
 }
+
+// The feed walks the whole event store per request — it must sit behind
+// the same limiter as every other public route.
+func TestFeedRateLimited(t *testing.T) {
+	_, h, _ := newTestServer(t)
+	limited := false
+	for range 40 {
+		if w := do(t, h, "GET", "/feed.ics", "", ""); w.Code == http.StatusTooManyRequests {
+			limited = true
+			break
+		}
+	}
+	if !limited {
+		t.Fatal("40 rapid feed requests never hit the rate limit")
+	}
+}
+
+func TestPublicSecurityHeaders(t *testing.T) {
+	_, h, _ := newTestServer(t)
+	w := do(t, h, "GET", "/a/nosuchtoken", "", "")
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store (tokens ride in the URL)", got)
+	}
+	if got := w.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("Referrer-Policy = %q, want no-referrer", got)
+	}
+}
+
+// A portal token — even at direct trust — must only act on events its
+// holder is assigned to. Anything else is a capability escalation.
+func TestPortalSubmitForeignEventRejected(t *testing.T) {
+	svc, h, _ := newTestServer(t)
+	start := time.Now().Add(72 * time.Hour).UTC()
+	e, _ := svc.CreateEvent(core.EventInput{Title: "Not Yours", StartsAt: start, EndsAt: start.Add(time.Hour)})
+	ana, _ := svc.AddPerson("ana", core.TrustRespond, nil)
+	svc.Assign(e.ID, ana.ID, "")
+	mallory, _ := svc.AddPerson("mallory", core.TrustDirect, nil)
+	portal, err := svc.PersonPortalURL(mallory.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(portal)
+
+	form := url.Values{"kind": {"cancel"}, "event_id": {e.ID}, "note": {"gone"}}
+	req := httptest.NewRequest("POST", u.Path+"/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("foreign event_id: got %d, want 404", w.Code)
+	}
+	if got, _ := svc.EventByID(e.ID); got.Status != core.StatusScheduled {
+		t.Fatalf("foreign portal submit cancelled the event: %+v", got)
+	}
+
+	// Control: once assigned, the same submit applies.
+	svc.Assign(e.ID, mallory.ID, "")
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest("POST", u.Path+"/submit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("assigned submit: got %d, want 303", w.Code)
+	}
+	if got, _ := svc.EventByID(e.ID); got.Status != core.StatusCancelled {
+		t.Fatalf("assigned submit did not apply: %+v", got)
+	}
+}
+
+// The HMAC secret is shown once, on registration — the list must not
+// keep echoing it.
+func TestWebhookSecretRedacted(t *testing.T) {
+	svc, _, h := newTestServer(t)
+	wh, err := svc.AddWebhook("https://example.org/hook", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wh.Secret == "" {
+		t.Fatal("registration must return the secret")
+	}
+	w := do(t, h, "GET", "/api/v1/webhooks", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list webhooks: %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), wh.Secret) {
+		t.Fatal("webhook list echoes the HMAC secret")
+	}
+}

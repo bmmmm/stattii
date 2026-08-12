@@ -203,3 +203,22 @@ func TestFetchCalendarEndToEnd(t *testing.T) {
 		t.Fatal("missing calendar_source must error")
 	}
 }
+
+func TestSyncEmptyFeedIsSuspect(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	now := *clock
+	until := now.Add(60 * 24 * time.Hour)
+	a := occ("u1", "Stays", now.Add(48*time.Hour), time.Hour)
+	svc.SyncCalendar([]icsimport.Occurrence{a}, nil, until)
+
+	// A feed that suddenly reports nothing is a broken feed until proven
+	// otherwise — no vanished verdicts, a suspect flag instead.
+	rep := svc.SyncCalendar(nil, nil, until)
+	if !rep.Suspect {
+		t.Fatalf("empty feed against a populated window must be suspect: %+v", rep)
+	}
+	if len(rep.Vanished) != 0 {
+		t.Fatalf("suspect fetch must not report vanished events: %+v", rep)
+	}
+}

@@ -9,11 +9,16 @@ import (
 
 // limiter is a tiny per-key token bucket: burst tokens per window.
 type limiter struct {
-	mu     sync.Mutex
-	burst  float64
-	window time.Duration
-	seen   map[string]*bucket
+	mu        sync.Mutex
+	burst     float64
+	window    time.Duration
+	seen      map[string]*bucket
+	lastSweep time.Time
 }
+
+// maxTrackedKeys bounds limiter memory under key-rotation floods
+// (IPv6 hands every visitor a /64 of distinct keys).
+const maxTrackedKeys = 32768
 
 type bucket struct {
 	tokens float64
@@ -28,15 +33,24 @@ func (l *limiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
+	// Sweep at most once per window. An insert-triggered sweep alone never
+	// shrinks the map while every incoming key is fresh — exactly the flood
+	// case — and would rescan on each of those inserts.
+	if now.Sub(l.lastSweep) > l.window {
+		for k, v := range l.seen {
+			if now.Sub(v.last) > l.window {
+				delete(l.seen, k)
+			}
+		}
+		l.lastSweep = now
+	}
 	b, ok := l.seen[key]
 	if !ok {
-		// Opportunistic cleanup keeps the map bounded without a goroutine.
-		if len(l.seen) > 4096 {
-			for k, v := range l.seen {
-				if now.Sub(v.last) > l.window {
-					delete(l.seen, k)
-				}
-			}
+		if len(l.seen) >= maxTrackedKeys {
+			// Rotating keys already sidesteps per-key budgets; tracking the
+			// flood would cost memory without adding protection. Fail open
+			// for the new key and keep tracked visitors budgeted correctly.
+			return true
 		}
 		b = &bucket{tokens: l.burst}
 		l.seen[key] = b

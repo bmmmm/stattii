@@ -51,3 +51,22 @@ func TestFeed(t *testing.T) {
 		t.Error("bare LF in feed")
 	}
 }
+
+// Titles are foreign-controlled (portal create, feed import); a lone CR
+// must not let them start a new content line in the outbound feed.
+func TestFeedEscapesHostileTitle(t *testing.T) {
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	events := []core.Event{{
+		ID: "ev_x", Title: "Evil\rX-INJECT:1\r\nDESCRIPTION:fake",
+		StartsAt: now.Add(24 * time.Hour), Status: core.StatusConfirmed,
+	}}
+	feed := Feed("test-cal", events, now)
+	for _, l := range strings.Split(feed, "\r\n") {
+		if strings.Contains(l, "\r") {
+			t.Fatalf("bare CR survived escaping: %q", l)
+		}
+		if strings.HasPrefix(l, "X-INJECT") || strings.HasPrefix(l, "DESCRIPTION:fake") {
+			t.Fatalf("injected property line: %q", l)
+		}
+	}
+}

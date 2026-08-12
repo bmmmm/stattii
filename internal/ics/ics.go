@@ -67,9 +67,11 @@ func status(s core.EventStatus) string {
 	}
 }
 
-// escape per RFC 5545: backslash, semicolon, comma, newline.
+// escape per RFC 5545: backslash, semicolon, comma, newline. A lone CR is
+// covered too — titles are foreign-controlled (portal create, feed import)
+// and a raw CR would let them inject property lines into the feed.
 func escape(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, ";", `\;`, ",", `\,`, "\r\n", `\n`, "\n", `\n`)
+	r := strings.NewReplacer(`\`, `\\`, ";", `\;`, ",", `\,`, "\r\n", `\n`, "\r", `\n`, "\n", `\n`)
 	return r.Replace(s)
 }
 

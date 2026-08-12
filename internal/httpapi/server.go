@@ -26,6 +26,7 @@ type Server struct {
 	svc            *core.Service
 	adminToken     string
 	limiter        *limiter
+	loginLimiter   *limiter
 	calName        string
 	trustedProxies []*net.IPNet
 }
@@ -39,7 +40,8 @@ func New(svc *core.Service, adminToken, calName string, trustedProxies []*net.IP
 		calName = "stattii"
 	}
 	return &Server{svc: svc, adminToken: adminToken, limiter: newLimiter(30, time.Minute),
-		calName: calName, trustedProxies: trustedProxies}
+		loginLimiter: newLimiter(5, time.Minute),
+		calName:      calName, trustedProxies: trustedProxies}
 }
 
 // ParseTrustedProxies parses a comma-separated list of CIDRs or bare IPs.
@@ -85,7 +87,7 @@ func (s *Server) PublicHandler() http.Handler {
 	mux.HandleFunc("GET /p/{token}", s.public(s.portalPage))
 	mux.HandleFunc("POST /p/{token}/respond", s.public(s.portalRespond))
 	mux.HandleFunc("POST /p/{token}/submit", s.public(s.portalSubmit))
-	mux.HandleFunc("GET /feed.ics", s.feed)
+	mux.HandleFunc("GET /feed.ics", s.public(s.feed))
 	mux.HandleFunc("GET /healthz", healthz)
 	return mux
 }
@@ -158,6 +160,12 @@ func (s *Server) public(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "too many requests — try again in a minute", http.StatusTooManyRequests)
 			return
 		}
+		h := w.Header()
+		// Tokens ride in the URL path: keep pages out of shared caches and
+		// strip the Referer on any outbound navigation.
+		h.Set("Cache-Control", "no-store")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
 		next(w, r)
 	}
 }
@@ -468,7 +476,13 @@ func (s *Server) deleteBroadcast(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listWebhooks(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.svc.Webhooks())
+	hooks := s.svc.Webhooks()
+	// The HMAC secret is shown once, on registration — a list that echoes
+	// it forever ends up in panel responses, logs and shell histories.
+	for i := range hooks {
+		hooks[i].Secret = ""
+	}
+	writeJSON(w, http.StatusOK, hooks)
 }
 
 func (s *Server) createWebhook(w http.ResponseWriter, r *http.Request) {
