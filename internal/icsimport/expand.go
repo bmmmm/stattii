@@ -3,12 +3,62 @@
 package icsimport
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// The feed is foreign data, so expansion must be a dead end for anyone
+// trying to burn CPU or memory with it. Three bounds enforce that:
+// parse-time limits on the RRULE numbers, an enumeration budget every
+// loop spends from, and a fast-forward that starts uncounted series at
+// the window edge instead of at a far-past anchor.
+const (
+	// maxInterval and maxCount reject absurd RRULE numbers before they
+	// reach the date arithmetic. Both sit far above anything a real
+	// calendar emits — a rule beyond them is broken or hostile.
+	maxInterval = 10_000
+	maxCount    = 10_000
+
+	// maxEventSteps bounds the enumeration steps one VEVENT may spend,
+	// maxFeedSteps the whole Expand call so a feed cannot multiply the
+	// per-event budget by its own length. Every loop an RRULE can drive
+	// spends from this, and every appended occurrence costs a step, so
+	// the budget caps run time and result size alike. This is the
+	// backstop: it holds regardless of how clever the input is.
+	maxEventSteps = 500_000
+	maxFeedSteps  = 2_000_000
+)
+
+// errBudget aborts a VEVENT whose recurrence would outrun the budget.
+// It is reported like any other expansion failure — loudly, as Skipped.
+var errBudget = errors.New("recurrence too large: enumeration budget exhausted")
+
+// budget meters enumeration work across one Expand call.
+type budget struct {
+	event, feed int
+	hit         bool // true once a spend was denied
+}
+
+func newBudget() *budget { return &budget{event: maxEventSteps, feed: maxFeedSteps} }
+
+// nextEvent hands the next VEVENT a fresh per-event allowance; the feed
+// allowance keeps counting down across events.
+func (b *budget) nextEvent() { b.event, b.hit = maxEventSteps, false }
+
+// spend takes one step and reports false once the budget is exhausted.
+func (b *budget) spend() bool {
+	if b.event <= 0 || b.feed <= 0 {
+		b.hit = true
+		return false
+	}
+	b.event--
+	b.feed--
+	return true
+}
 
 // Occurrence is one concrete date a calendar event happens on. Key is
 // stable across refetches — overrides keep the ORIGINAL start in the
@@ -36,22 +86,34 @@ func occurrenceKey(uid string, originalStart time.Time) string {
 }
 
 // Expand turns parsed events into occurrences within [from, to].
-// Recurrence is resolved by enumerating from the series anchor, so
-// COUNT and EXDATE stay correct even when the anchor lies in the past.
+// Recurrence is resolved from the series anchor, so COUNT and EXDATE
+// stay correct even when the anchor lies in the past; where that is
+// provably equivalent, enumeration fast-forwards to the window instead.
+// Every series that hits a limit ends up in Skipped, never dropped.
 func Expand(events []Event, from, to time.Time) ([]Occurrence, []Skipped) {
 	var (
 		occs    []Occurrence
 		skipped []Skipped
 	)
 
-	// Overrides (RECURRENCE-ID) replace single occurrences of their series.
+	// Overrides (RECURRENCE-ID) replace single occurrences of their
+	// series. firstOverride remembers the earliest original start a
+	// series is overridden at: an override may move an occurrence from
+	// before the window into it, so the fast-forward must not skip past
+	// it.
 	overrides := map[string]Event{}
+	firstOverride := map[string]time.Time{}
 	for _, e := range events {
-		if !e.RecurrenceID.IsZero() {
-			overrides[occurrenceKey(e.UID, e.RecurrenceID)] = e
+		if e.RecurrenceID.IsZero() {
+			continue
+		}
+		overrides[occurrenceKey(e.UID, e.RecurrenceID)] = e
+		if t, ok := firstOverride[e.UID]; !ok || e.RecurrenceID.Before(t) {
+			firstOverride[e.UID] = e.RecurrenceID
 		}
 	}
 
+	b := newBudget()
 	for _, e := range events {
 		if !e.RecurrenceID.IsZero() {
 			continue // handled via the override map
@@ -65,15 +127,21 @@ func Expand(events []Event, from, to time.Time) ([]Occurrence, []Skipped) {
 		if e.RRule == "" {
 			starts = []time.Time{e.Start}
 		} else {
+			lower := from
+			if t, ok := firstOverride[e.UID]; ok && t.Before(lower) {
+				lower = t
+			}
+			b.nextEvent()
 			var err error
-			starts, err = expandRule(e, to)
+			starts, err = expandRule(e, b, lower, to)
 			if err != nil {
 				skipped = append(skipped, Skipped{UID: e.UID, Summary: e.Summary, Reason: err.Error()})
 				continue
 			}
 		}
+		exdates := exdateSet(e.ExDates)
 		for _, st := range starts {
-			if excluded(st, e.ExDates) {
+			if exdates[st.Unix()] {
 				continue
 			}
 			occ := Occurrence{
@@ -101,13 +169,20 @@ func Expand(events []Event, from, to time.Time) ([]Occurrence, []Skipped) {
 	return occs, skipped
 }
 
-func excluded(t time.Time, exdates []time.Time) bool {
-	for _, x := range exdates {
-		if t.Equal(x) {
-			return true
-		}
+// exdateSet indexes EXDATEs by second so the exclusion test stays O(1)
+// per occurrence — a feed may carry thousands of them, and a linear
+// scan per occurrence would be quadratic in attacker-chosen input.
+// iCalendar times never carry sub-second precision, so the second
+// identifies an instant exactly as time.Equal would.
+func exdateSet(exdates []time.Time) map[int64]bool {
+	if len(exdates) == 0 {
+		return nil
 	}
-	return false
+	set := make(map[int64]bool, len(exdates))
+	for _, x := range exdates {
+		set[x.Unix()] = true
+	}
+	return set
 }
 
 // rule is the subset of RFC 5545 RRULE this importer understands —
@@ -150,6 +225,9 @@ func parseRule(s string, loc *time.Location) (rule, error) {
 			if err != nil || n < 1 {
 				return r, fmt.Errorf("bad INTERVAL %q", v)
 			}
+			if n > maxInterval {
+				return r, fmt.Errorf("INTERVAL %q above the %d limit", v, maxInterval)
+			}
 			r.Interval = n
 		case "UNTIL":
 			var t time.Time
@@ -171,6 +249,9 @@ func parseRule(s string, loc *time.Location) (rule, error) {
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 1 {
 				return r, fmt.Errorf("bad COUNT %q", v)
+			}
+			if n > maxCount {
+				return r, fmt.Errorf("COUNT %q above the %d limit", v, maxCount)
 			}
 			r.Count = n
 		case "BYDAY":
@@ -229,10 +310,12 @@ func parseRule(s string, loc *time.Location) (rule, error) {
 	return r, nil
 }
 
-// expandRule enumerates the series from its anchor until the window end
-// (or UNTIL/COUNT run out) and returns every start time. Times are
-// constructed in the anchor's location, so wall-clock times survive DST.
-func expandRule(e Event, windowEnd time.Time) ([]time.Time, error) {
+// expandRule enumerates the series until the window end (or UNTIL/COUNT
+// run out) and returns every start time. Times are constructed in the
+// anchor's location, so wall-clock times survive DST. windowStart is
+// only a hint for how far enumeration may skip ahead — it never filters
+// the result, that stays Expand's job.
+func expandRule(e Event, b *budget, windowStart, windowEnd time.Time) ([]time.Time, error) {
 	loc := e.Start.Location()
 	r, err := parseRule(e.RRule, loc)
 	if err != nil {
@@ -245,8 +328,23 @@ func expandRule(e Event, windowEnd time.Time) ([]time.Time, error) {
 
 	h, mi, sec := e.Start.Clock()
 	anchor := e.Start
+	// COUNT counts from the anchor, so a counted series must be walked
+	// from there to stay correct. Without COUNT every occurrence before
+	// the window is discarded anyway, so enumeration may start at the
+	// window edge — that is what keeps a year-1 DTSTART cheap.
+	lower := anchor
+	if r.Count == 0 && windowStart.After(lower) {
+		lower = windowStart
+	}
+
 	var out []time.Time
-	add := func(t time.Time) bool { // false = enumeration budget exhausted
+	// add records one candidate start and reports false once enumeration
+	// must stop — COUNT satisfied, or the budget ran out (b.hit tells
+	// the two apart).
+	add := func(t time.Time) bool {
+		if !b.spend() {
+			return false
+		}
 		if t.Before(anchor) || t.After(end) {
 			return true
 		}
@@ -256,8 +354,14 @@ func expandRule(e Event, windowEnd time.Time) ([]time.Time, error) {
 
 	switch r.Freq {
 	case "DAILY":
-		for d, i := anchor, 0; !d.After(end); i++ {
-			d = time.Date(anchor.Year(), anchor.Month(), anchor.Day()+i*r.Interval, h, mi, sec, 0, loc)
+		// The first step at or before the window edge, computed instead
+		// of enumerated; one whole interval of slack keeps it safe.
+		i := max(0, daysBetween(anchor, lower)/r.Interval-1)
+		for ; ; i++ {
+			if !b.spend() {
+				break
+			}
+			d := time.Date(anchor.Year(), anchor.Month(), anchor.Day()+i*r.Interval, h, mi, sec, 0, loc)
 			if d.After(end) {
 				break
 			}
@@ -274,12 +378,19 @@ func expandRule(e Event, windowEnd time.Time) ([]time.Time, error) {
 			days[anchor.Weekday()] = true
 		}
 		anchorMonday := startOfISOWeek(anchor)
-		for day := 0; ; day++ {
+		// Week index and weekday are decided per day from absolute
+		// dates, so skipping whole days ahead changes nothing; a week of
+		// slack covers the interval alignment.
+		day := max(0, daysBetween(anchor, lower)-7)
+		for ; ; day++ {
+			if !b.spend() {
+				break
+			}
 			d := time.Date(anchor.Year(), anchor.Month(), anchor.Day()+day, h, mi, sec, 0, loc)
 			if d.After(end) {
 				break
 			}
-			week := int(startOfISOWeek(d).Sub(anchorMonday).Hours() / (24 * 7))
+			week := daysBetween(anchorMonday, startOfISOWeek(d)) / 7
 			if week%r.Interval != 0 || !days[d.Weekday()] {
 				continue
 			}
@@ -291,12 +402,19 @@ func expandRule(e Event, windowEnd time.Time) ([]time.Time, error) {
 		y0, m0 := anchor.Year(), int(anchor.Month())
 	monthly:
 		for mIdx := 0; ; mIdx += r.Interval {
+			if !b.spend() {
+				break
+			}
 			y, m := y0+(m0-1+mIdx)/12, (m0-1+mIdx)%12+1
 			periodStart := time.Date(y, time.Month(m), 1, 0, 0, 0, 0, loc)
 			if periodStart.After(end) {
 				break
 			}
-			for _, d := range monthCandidates(r, anchor, y, time.Month(m), h, mi, sec, loc) {
+			cands, ok := monthCandidates(r, anchor, y, time.Month(m), h, mi, sec, loc, b)
+			if !ok {
+				break
+			}
+			for _, d := range cands {
 				if !add(d) {
 					break monthly
 				}
@@ -309,11 +427,18 @@ func expandRule(e Event, windowEnd time.Time) ([]time.Time, error) {
 		}
 	yearly:
 		for y := anchor.Year(); ; y += r.Interval {
+			if !b.spend() {
+				break
+			}
 			if time.Date(y, 1, 1, 0, 0, 0, 0, loc).After(end) {
 				break
 			}
 			for _, m := range months {
-				for _, d := range monthCandidates(r, anchor, y, time.Month(m), h, mi, sec, loc) {
+				cands, ok := monthCandidates(r, anchor, y, time.Month(m), h, mi, sec, loc, b)
+				if !ok {
+					break yearly
+				}
+				for _, d := range cands {
 					if !add(d) {
 						break yearly
 					}
@@ -321,22 +446,35 @@ func expandRule(e Event, windowEnd time.Time) ([]time.Time, error) {
 			}
 		}
 	}
+	if b.hit {
+		return nil, errBudget
+	}
 	return out, nil
 }
 
 // monthCandidates resolves which days of one month a monthly/yearly
-// rule selects, applying BYSETPOS as the final per-period filter.
-func monthCandidates(r rule, anchor time.Time, y int, m time.Month, h, mi, sec int, loc *time.Location) []time.Time {
+// rule selects, applying BYSETPOS as the final per-period filter. Every
+// candidate it appends costs a budget step; ok is false once the budget
+// is gone, and the caller must then abandon the whole series.
+func monthCandidates(r rule, anchor time.Time, y int, m time.Month, h, mi, sec int, loc *time.Location, b *budget) ([]time.Time, bool) {
 	daysInMonth := time.Date(y, m+1, 0, 0, 0, 0, 0, loc).Day()
 	var cands []time.Time
 	switch {
 	case len(r.ByDay) > 0:
 		for _, bd := range r.ByDay {
+			if !b.spend() {
+				return nil, false
+			}
 			if bd.Ord == 0 {
 				for day := 1; day <= daysInMonth; day++ {
-					if d := time.Date(y, m, day, h, mi, sec, 0, loc); d.Weekday() == bd.Weekday {
-						cands = append(cands, d)
+					d := time.Date(y, m, day, h, mi, sec, 0, loc)
+					if d.Weekday() != bd.Weekday {
+						continue
 					}
+					if !b.spend() {
+						return nil, false
+					}
+					cands = append(cands, d)
 				}
 				continue
 			}
@@ -346,6 +484,9 @@ func monthCandidates(r rule, anchor time.Time, y int, m time.Month, h, mi, sec i
 		}
 	case len(r.ByMonthDay) > 0:
 		for _, md := range r.ByMonthDay {
+			if !b.spend() {
+				return nil, false
+			}
 			day := md
 			if md < 0 {
 				day = daysInMonth + 1 + md
@@ -355,16 +496,22 @@ func monthCandidates(r rule, anchor time.Time, y int, m time.Month, h, mi, sec i
 			}
 		}
 	default:
+		if !b.spend() {
+			return nil, false
+		}
 		if anchor.Day() <= daysInMonth {
 			cands = append(cands, time.Date(y, m, anchor.Day(), h, mi, sec, 0, loc))
 		}
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].Before(cands[j]) })
 	if len(r.BySetPos) == 0 {
-		return cands
+		return cands, true
 	}
 	var picked []time.Time
 	for _, pos := range r.BySetPos {
+		if !b.spend() {
+			return nil, false
+		}
 		idx := pos - 1
 		if pos < 0 {
 			idx = len(cands) + pos
@@ -374,7 +521,7 @@ func monthCandidates(r rule, anchor time.Time, y int, m time.Month, h, mi, sec i
 		}
 	}
 	sort.Slice(picked, func(i, j int) bool { return picked[i].Before(picked[j]) })
-	return picked
+	return picked, true
 }
 
 // nthWeekday returns the ord-th (negative: from the end) weekday of a
@@ -401,4 +548,17 @@ func startOfISOWeek(t time.Time) time.Time {
 	shift := (int(t.Weekday()) + 6) % 7 // Monday = 0
 	y, m, d := t.AddDate(0, 0, -shift).Date()
 	return time.Date(y, m, d, 0, 0, 0, 0, t.Location())
+}
+
+// daysBetween counts whole calendar days from a's date to b's date, b
+// read in a's location. Subtracting the two times would not do: a
+// time.Duration overflows past ~292 years and a degenerate feed may
+// anchor a series in year 1, and a duration also miscounts across DST.
+func daysBetween(a, b time.Time) int {
+	const day = 86400
+	midnightUTC := func(t time.Time) int64 {
+		y, m, d := t.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() / day
+	}
+	return int(midnightUTC(b.In(a.Location())) - midnightUTC(a))
 }

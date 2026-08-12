@@ -3,6 +3,7 @@
 package icsimport
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +255,246 @@ func TestUnsupportedRuleIsSkippedLoudly(t *testing.T) {
 		time.Date(2026, 9, 30, 0, 0, 0, 0, loc))
 	if len(sk) != 1 || !strings.Contains(sk[0].Reason, "FREQ") {
 		t.Fatalf("want loud skip for HOURLY, got %+v", sk)
+	}
+}
+
+// --- hostile / degenerate feeds ---------------------------------------
+//
+// The source feed is foreign data. Parsing and expansion must stay cheap
+// no matter what it contains, and anything refused must be reported.
+
+func TestFarPastAnchorDoesNotEnumerateHistory(t *testing.T) {
+	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+
+	// A daily series anchored in year 1 is ~740k occurrences before the
+	// window. Enumerating them would cost seconds and megabytes per
+	// VEVENT; fast-forwarding makes it cost the window.
+	start := time.Now()
+	occs, sk := expandOne(t, vevent(
+		"DTSTART:00010101T000100Z",
+		"RRULE:FREQ=DAILY",
+		"SUMMARY:AncientDaily"), from, to)
+	if len(sk) != 0 {
+		t.Fatalf("daily year-1 anchor was skipped: %+v", sk)
+	}
+	if len(occs) != 61 { // Sep 1 .. Oct 31, both ends inclusive
+		t.Fatalf("daily year-1 anchor: want 61 occurrences, got %d", len(occs))
+	}
+
+	occs, sk = expandOne(t, vevent(
+		"DTSTART:00010101T000100Z",
+		"RRULE:FREQ=WEEKLY",
+		"SUMMARY:AncientWeekly"), from, to)
+	if len(sk) != 0 {
+		t.Fatalf("weekly year-1 anchor was skipped: %+v", sk)
+	}
+	if len(occs) != 8 { // Mondays Sep 7 .. Oct 26
+		t.Fatalf("weekly year-1 anchor: want 8 occurrences, got %d", len(occs))
+	}
+	for _, o := range occs {
+		if o.Start.Weekday() != time.Monday {
+			t.Fatalf("weekly anchor drifted off its weekday: %v", o.Start)
+		}
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("far-past anchors took %v — enumeration is not fast-forwarding", d)
+	}
+}
+
+func TestAbsurdRRuleNumbersAreRejectedLoudly(t *testing.T) {
+	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)
+	cases := []struct{ name, rrule, want string }{
+		// Overflows y += Interval, wraps the year, and never passes the
+		// window end: a 100% CPU loop that outlives the client.
+		{"interval overflow", "FREQ=YEARLY;INTERVAL=9223372036854775807", "INTERVAL"},
+		{"interval above limit", "FREQ=DAILY;INTERVAL=10001", "INTERVAL"},
+		{"interval unparsable", "FREQ=DAILY;INTERVAL=99999999999999999999999", "INTERVAL"},
+		{"count above limit", "FREQ=DAILY;COUNT=10001", "COUNT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			occs, sk := expandOne(t, vevent(
+				"DTSTART:20260901T100000Z", "RRULE:"+tc.rrule, "SUMMARY:Bomb"), from, to)
+			if d := time.Since(start); d > 2*time.Second {
+				t.Fatalf("expansion took %v — the rule was not rejected", d)
+			}
+			if len(occs) != 0 {
+				t.Fatalf("want no occurrences, got %d", len(occs))
+			}
+			if len(sk) != 1 || !strings.Contains(sk[0].Reason, tc.want) {
+				t.Fatalf("want a loud skip naming %s, got %+v", tc.want, sk)
+			}
+		})
+	}
+	// The limits accept what a real calendar emits.
+	if _, sk := expandOne(t, vevent(
+		"DTSTART:20260901T100000Z", "RRULE:FREQ=DAILY;INTERVAL=10000;COUNT=10000",
+		"SUMMARY:Legit"), from, to); len(sk) != 0 {
+		t.Fatalf("limit values must still be accepted: %+v", sk)
+	}
+}
+
+func TestEnumerationBudgetAbortsLoudly(t *testing.T) {
+	// Nothing here is out of range on its own: every weekday of every
+	// month since year 1. Only the budget stops it.
+	start := time.Now()
+	occs, sk := expandOne(t, vevent(
+		"DTSTART:00010101T000100Z",
+		"RRULE:FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR,SA,SU",
+		"SUMMARY:BudgetBomb"),
+		time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC))
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("expansion took %v — the budget did not bite", d)
+	}
+	if len(occs) != 0 {
+		t.Fatalf("an aborted series must yield nothing, got %d occurrences", len(occs))
+	}
+	if len(sk) != 1 || !strings.Contains(sk[0].Reason, "budget") {
+		t.Fatalf("want a loud budget skip, got %+v", sk)
+	}
+}
+
+func TestFastForwardKeepsOverrideBeforeWindow(t *testing.T) {
+	loc := berlin(t)
+	// The Aug 15 occurrence lies before the window but is moved into it.
+	// Fast-forwarding to the window edge must not lose it.
+	raw := "BEGIN:VCALENDAR\r\n" +
+		"BEGIN:VEVENT\r\nUID:moved-in\r\n" +
+		"DTSTART;TZID=Europe/Berlin:20260801T200000\r\n" +
+		"DTEND;TZID=Europe/Berlin:20260801T220000\r\n" +
+		"RRULE:FREQ=DAILY\r\nSUMMARY:Daily\r\nEND:VEVENT\r\n" +
+		"BEGIN:VEVENT\r\nUID:moved-in\r\n" +
+		"RECURRENCE-ID;TZID=Europe/Berlin:20260815T200000\r\n" +
+		"DTSTART;TZID=Europe/Berlin:20260905T210000\r\n" +
+		"DTEND;TZID=Europe/Berlin:20260905T230000\r\n" +
+		"SUMMARY:Moved in\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+	events, sk := Parse([]byte(raw))
+	if len(sk) != 0 {
+		t.Fatalf("skipped: %+v", sk)
+	}
+	occs, sk := Expand(events,
+		time.Date(2026, 9, 1, 0, 0, 0, 0, loc),
+		time.Date(2026, 9, 10, 23, 0, 0, 0, loc))
+	if len(sk) != 0 {
+		t.Fatalf("skipped: %+v", sk)
+	}
+	var moved *Occurrence
+	for i, o := range occs {
+		if o.Summary == "Moved in" {
+			moved = &occs[i]
+		}
+	}
+	if moved == nil {
+		t.Fatalf("override from before the window was lost: %+v", occs)
+	}
+	wantKey := "moved-in/" + time.Date(2026, 8, 15, 20, 0, 0, 0, loc).UTC().Format(time.RFC3339)
+	if moved.Key != wantKey || moved.Start.Day() != 5 || moved.Start.Hour() != 21 {
+		t.Fatalf("override wrong: key=%q start=%v", moved.Key, moved.Start)
+	}
+}
+
+func TestBiweeklyAcrossDSTSwitch(t *testing.T) {
+	loc := berlin(t)
+	// Anchor Mon 2027-03-15; the second occurrence lands after the
+	// spring-forward Sunday, so the week index must be counted in
+	// calendar days, not in hours.
+	occs, sk := expandOne(t, vevent(
+		"DTSTART;TZID=Europe/Berlin:20270315T200000",
+		"DTEND;TZID=Europe/Berlin:20270315T220000",
+		"RRULE:FREQ=WEEKLY;INTERVAL=2",
+		"SUMMARY:BiweeklyDST"),
+		time.Date(2027, 3, 1, 0, 0, 0, 0, loc),
+		time.Date(2027, 4, 30, 0, 0, 0, 0, loc))
+	if len(sk) != 0 {
+		t.Fatalf("skipped: %+v", sk)
+	}
+	var days []int
+	for _, o := range occs {
+		if o.Start.Hour() != 20 {
+			t.Fatalf("wall clock drifted across DST: %v", o.Start)
+		}
+		days = append(days, o.Start.Day())
+	}
+	// Mar 15, Mar 29, Apr 12, Apr 26.
+	if len(days) != 4 || days[0] != 15 || days[1] != 29 || days[2] != 12 || days[3] != 26 {
+		t.Fatalf("biweekly across DST = %v, want [15 29 12 26]", days)
+	}
+}
+
+func TestFoldedLinesStayLinear(t *testing.T) {
+	// 200k one-byte continuations: appending to the previous string
+	// would copy it every time and burn minutes on a 600 kB feed.
+	var b strings.Builder
+	b.WriteString("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:folded\r\nSUMMARY:x")
+	for range 200_000 {
+		b.WriteString("\r\n y")
+	}
+	b.WriteString("\r\nDTSTART:20260901T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+	start := time.Now()
+	events, sk := Parse([]byte(b.String()))
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("unfolding took %v — it is still quadratic", d)
+	}
+	if len(sk) != 0 || len(events) != 1 || len(events[0].Summary) != 200_001 {
+		t.Fatalf("folded summary wrong: events=%d skipped=%+v", len(events), sk)
+	}
+}
+
+func TestManyExdatesStayLinear(t *testing.T) {
+	// A daily series plus 50k EXDATEs: a linear scan per occurrence
+	// would be a quadratic cross product. One of them must still bite.
+	var ex strings.Builder
+	ex.WriteString("EXDATE:20260905T100000Z")
+	noise := time.Date(1900, 1, 1, 11, 0, 0, 0, time.UTC) // 11:00 never matches
+	for i := range 50_000 {
+		ex.WriteString("," + noise.AddDate(0, 0, i).Format("20060102T150405Z"))
+	}
+	start := time.Now()
+	occs, sk := expandOne(t, vevent(
+		"DTSTART:20260901T100000Z", "RRULE:FREQ=DAILY", ex.String(), "SUMMARY:Excluded"),
+		time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 10, 31, 23, 0, 0, 0, time.UTC))
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("exdate matching took %v — it is still quadratic", d)
+	}
+	if len(sk) != 0 || len(occs) != 60 { // Sep 1 .. Oct 31 minus Sep 5
+		t.Fatalf("exdate set wrong: %d occs, %+v", len(occs), sk)
+	}
+	for _, o := range occs {
+		if o.Start.Month() == time.September && o.Start.Day() == 5 {
+			t.Fatalf("excluded date still present: %v", o.Start)
+		}
+	}
+}
+
+func TestLargeHonestFeedFitsTheBudget(t *testing.T) {
+	// Headroom check: 5000 weekly series anchored ten years back, the
+	// production 60-day window. The feed-wide budget must not turn an
+	// honest calendar into a wall of skips.
+	var b strings.Builder
+	b.WriteString("BEGIN:VCALENDAR\r\n")
+	for i := range 5000 {
+		fmt.Fprintf(&b, "BEGIN:VEVENT\r\nUID:u%d\r\nDTSTART:20160104T100000Z\r\n"+
+			"DTEND:20160104T110000Z\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:S%d\r\nEND:VEVENT\r\n", i, i)
+	}
+	b.WriteString("END:VCALENDAR\r\n")
+
+	start := time.Now()
+	occs, sk := expandOne(t, b.String(),
+		time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC))
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("honest feed took %v", d)
+	}
+	if len(sk) != 0 {
+		t.Fatalf("honest feed hit a limit: %+v", sk[:min(3, len(sk))])
+	}
+	if len(occs) != 5000*8 { // 8 Mondays in the window, per series
+		t.Fatalf("honest feed: want 40000 occurrences, got %d", len(occs))
 	}
 }
 

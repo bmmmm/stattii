@@ -120,20 +120,37 @@ func Parse(raw []byte) ([]Event, []Skipped) {
 }
 
 // unfold splits raw data into logical lines: a line starting with space
-// or tab continues the previous one (RFC 5545 folding).
+// or tab continues the previous one (RFC 5545 folding). The current
+// line is accumulated in a builder — appending to the last string of
+// the slice instead would copy it once per continuation, which a feed
+// of a million one-byte folds turns into quadratic work.
 func unfold(raw []byte) []string {
 	physical := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
-	var lines []string
+	var (
+		lines   []string
+		cur     strings.Builder
+		started bool
+	)
+	flush := func() {
+		if started {
+			lines = append(lines, cur.String())
+			cur.Reset()
+			started = false
+		}
+	}
 	for _, l := range physical {
 		if l == "" {
 			continue
 		}
-		if (l[0] == ' ' || l[0] == '\t') && len(lines) > 0 {
-			lines[len(lines)-1] += l[1:]
+		if (l[0] == ' ' || l[0] == '\t') && started {
+			cur.WriteString(l[1:])
 			continue
 		}
-		lines = append(lines, l)
+		flush()
+		cur.WriteString(l)
+		started = true
 	}
+	flush()
 	return lines
 }
 
