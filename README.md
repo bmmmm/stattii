@@ -32,9 +32,9 @@ go build .
 export STATTII_URL=http://127.0.0.1:8789   # the ADMIN listener, not the public one
 export STATTII_TOKEN=$(cat ./data/admin-token)
 
-stattii person add --name "Ana" --trust respond --email ana@example.org
-stattii event create --title "Tuesday Session" --at 2026-08-18T19:00 --location "Hall 3"
-stattii assign <event-id> <person-id>
+./stattii person add --name "Ana" --trust respond --email ana@example.org
+./stattii event create --title "Tuesday Session" --at 2026-08-18T19:00 --location "Hall 3"
+./stattii assign <event-id> <person-id>
 ```
 
 48 hours before start (configurable via `--reminder-lead`), Ana gets the
@@ -95,7 +95,9 @@ ready-made blank in `examples/`:
 
 Config files are JSON with full-line `//` comments. Unknown keys are
 rejected loudly, so typos cannot be silently ignored. Precedence:
-explicit `serve` flags > `config.json` > `STATTII_*` environment variables.
+explicit `serve` flags > `config.json` > `STATTII_*` environment variables
+(only the fallbacks listed below have an env tier — everything else is
+flags/config only).
 Credentials go either directly into the gitignored file or stay in the
 environment via `smtp_pass_env` / `token_env` — your choice.
 
@@ -113,6 +115,7 @@ Environment fallbacks (all optional once `config.json` exists):
 | `STATTII_SMTP_HOST/PORT/USER/PASS/FROM` | email channel |
 | `STATTII_TELEGRAM_TOKEN` | Telegram bot channel (addresses are chat ids) |
 | `STATTII_ADMIN_NOTIFY` | escalation target, `kind:address` |
+| `STATTII_CALENDAR_SOURCE` | ICS feed URL for the calendar import |
 | `STATTII_URL`, `STATTII_TOKEN` | used by the CLI client |
 
 ## Calendar source
@@ -122,9 +125,12 @@ at a public ICS feed (Nextcloud public link, `webcal://` or `https://`)
 and trigger a fetch — the panel button, `stattii calendar fetch`, or
 `POST /api/v1/calendar/fetch`. Recurring series are expanded
 `calendar_window` (default 60 days) ahead; each occurrence becomes a
-stattii event keyed to its source, so refetches are idempotent. Source
-time changes run the full move transaction (fan-out included); events
-that disappear from the feed are reported but **never** auto-cancelled.
+stattii event keyed to its source, so refetches are idempotent. A changed
+start time runs the full move transaction (fan-out included); an end-only
+change is a quiet update — nobody has to re-confirm because an event runs
+longer. Events that disappear from the feed are reported but **never**
+auto-cancelled, and a fetch that suddenly returns nothing is flagged
+suspect instead of declaring everything vanished.
 Assign a responsible once per series (`stattii series-assign`, or the
 "whole series" checkbox in the panel) and every future occurrence
 inherits them — and their reminders.
@@ -163,20 +169,27 @@ group ownership):
 ```
 
 Behind a proxy, set `trusted_proxies` so the public rate limiter sees
-real client IPs.
+real client IPs. List **every** hop that touches the request: behind
+Cloudflare Tunnel → Traefik that means Traefik's network **and** the
+tunnel daemon's — if the rightmost non-trusted hop is still your own
+infrastructure, every visitor shares one rate-limit bucket.
 
 ## API
 
 Everything the CLI does is plain REST under `/api/v1` (bearer auth):
-events (`create/confirm/cancel/move/links/responses/propagation`), people,
-assignments, broadcasts, webhooks, proposals, audit, overview. Webhook
+events (`create/confirm/cancel/move/reinstate/links/responses/propagation`),
+people (incl. test messages), assignments, series-assignments, broadcasts,
+webhooks, proposals, audit, overview, `tick`, `calendar/fetch`. Webhook
 payloads are signed: `X-Stattii-Signature: sha256=<hex hmac of body>` with
-the per-subscription secret returned on registration.
+the per-subscription secret returned **once, on registration** (the list
+endpoint redacts it).
 
-Public surface (rate-limited, token-scoped): `/a/<token>`, `/p/<token>`,
-`/feed.ics`, `/healthz`. Note calendar apps poll ICS feeds slowly (Google:
-~12–24 h) — the feed is the passive baseline; short-notice cancellations
-travel through the active channels above.
+Public surface (rate-limited): the tokenized `/a/<token>` and
+`/p/<token>` pages, plus `/feed.ics` and `/healthz`. The feed is
+unauthenticated and lists all events — treat its URL accordingly. Note
+calendar apps poll ICS feeds slowly (Google: ~12–24 h) — the feed is the
+passive baseline; short-notice cancellations travel through the active
+channels above.
 
 ## License
 

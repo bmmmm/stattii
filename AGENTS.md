@@ -67,8 +67,10 @@ sandbox they may need a bypass; CI has no sandbox and is fine.
 
 ## Conventions
 
-- Config precedence: explicit `serve` flags > `config.json` > `STATTII_*` env.
-  Config files are JSON with full-line `//` comments; unknown keys fail loudly.
+- Config precedence: explicit `serve` flags > `config.json` > `STATTII_*` env
+  (the env tier exists only for the fallbacks listed in the README — most
+  keys are flags/config only). Config files are JSON with full-line `//`
+  comments; unknown keys fail loudly.
 - Commits as `bmmmm <hi@brtsz.de>`; tag releases `vX.Y.Z`. Dual-remote
   since 2026-08-12: push branches AND tags to both `origin` (the private
   Forgejo) and `github` (public mirror, pre-push leak gate installed).

@@ -12,6 +12,16 @@
 - **v0.3.0** — project-folder configuration: `config.json` (commented JSON,
   loud on typos), ready-made blanks in `examples/` (Gmail, generic SMTP,
   Telegram), AGENTS.md.
+- **v0.4.0** — admin surface: dedicated admin listener (`admin_listen`,
+  default loopback) carrying `/api/v1` + the server-rendered `/admin` web
+  UI (cookie login), `GET /api/v1/overview` + `stattii overview`; the
+  public listener keeps only the token pages and the feed.
+- **v0.4.1** — unix-socket support for `admin_listen` (any value with `/`).
+- **v0.5.0** — calendar import: fetch a foreign ICS feed
+  (`calendar_source`), expand recurrence into `calendar_window`, sync
+  occurrences as events (start changes run the move transaction; vanished
+  is reported, never cancelled), series responsibles, per-recipient
+  tracking timeline + test messages in the panel, `/api/v1` contract test.
 
 ## Phase 2 — production go-live
 
@@ -40,11 +50,6 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
 
 ## Later / maybe
 
-- ~~Web dashboard~~ — done 2026-08-12 as `/admin` on the dedicated admin
-  listener (`admin_listen`, default loopback): server-rendered thin skin
-  over the existing service methods, cookie login with the admin token.
-  Same cut moved `/api/v1` off the public listener entirely and added
-  `GET /api/v1/overview` + `stattii overview`.
 - Recurring events / series sugar (expand-on-create; ICS stays RRULE-free).
 - SQLite store backend behind the `Store` interface — only if volume ever
   demands it (a few hundred events/year will not).
