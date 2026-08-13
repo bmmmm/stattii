@@ -20,7 +20,9 @@ gap:
 
 Single static Go binary, stdlib only — zero dependencies. State lives in a
 JSON file behind a store interface (SQLite can slot in later; at a few
-hundred events a year it never has to).
+hundred events a year it never has to). The design rationale — flows,
+identity model, and the limits that are deliberate decisions — lives in
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start
 

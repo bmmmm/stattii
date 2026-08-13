@@ -22,6 +22,9 @@ people stood in front of a locked door. That failure mode drives the design.
 | `internal/icsimport` | inbound: parses the configured foreign feed + expands recurrence into a window (owner decision 2026-08-12 — import IS in scope now). The feed URL is operator data: host config only, never in the repo; test fixtures are synthetic |
 | root `package main` | `serve` + thin CLI client over the REST API; `config.go` loads `config.json` |
 
+Design rationale and the deliberate limits (scaling, guest identity,
+tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Invariants — do not break
 
 1. **GET never mutates.** Mail scanners prefetch links; only POST acts.
