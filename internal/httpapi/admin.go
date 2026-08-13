@@ -32,6 +32,9 @@ func (s *Server) registerAdminUI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/event/{id}/reinstate", s.adminAuth(s.adminEventReinstate))
 	mux.HandleFunc("POST /admin/event/{id}/move", s.adminAuth(s.adminEventMove))
 	mux.HandleFunc("POST /admin/event/{id}/assign", s.adminAuth(s.adminEventAssign))
+	mux.HandleFunc("POST /admin/event/{id}/invite", s.adminAuth(s.adminInviteCreate))
+	mux.HandleFunc("POST /admin/event/{id}/invite/revoke", s.adminAuth(s.adminInviteRevoke))
+	mux.HandleFunc("POST /admin/event/{id}/guests/{gid}/remove", s.adminAuth(s.adminGuestRemove))
 	mux.HandleFunc("POST /admin/events", s.adminAuth(s.adminEventCreate))
 	mux.HandleFunc("GET /admin/people", s.adminAuth(s.adminPeople))
 	mux.HandleFunc("POST /admin/people", s.adminAuth(s.adminPeopleAdd))
@@ -234,6 +237,7 @@ type adminEventData struct {
 	Tracks      []adminTrack
 	Propagation core.PropagationStatus
 	People      []core.Person
+	Invite      core.InviteStatus
 }
 
 func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
@@ -257,6 +261,9 @@ func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
 		d.Tracks = append(d.Tracks, adminTrack{A: a, Entries: timelineFor(id, a.PersonID, outbox, responses)})
 	}
 	d.Propagation, _ = s.svc.Propagation(id)
+	// Read-only: the invite link is minted by the button below, never by
+	// rendering this page — GET never mutates here either.
+	d.Invite, _ = s.svc.Invite(id)
 	s.renderAdmin(w, "admin_event", d)
 }
 
@@ -328,6 +335,19 @@ func (s *Server) adminEventAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminAct(w, r, s.svc.Assign(r.PathValue("id"), r.FormValue("person_id"), r.FormValue("role")))
+}
+
+func (s *Server) adminInviteCreate(w http.ResponseWriter, r *http.Request) {
+	_, err := s.svc.CreateInvite(r.PathValue("id"))
+	s.adminAct(w, r, err)
+}
+
+func (s *Server) adminInviteRevoke(w http.ResponseWriter, r *http.Request) {
+	s.adminAct(w, r, s.svc.RevokeInvite(r.PathValue("id")))
+}
+
+func (s *Server) adminGuestRemove(w http.ResponseWriter, r *http.Request) {
+	s.adminAct(w, r, s.svc.RemoveGuest(r.PathValue("id"), r.PathValue("gid")))
 }
 
 func (s *Server) adminCalendarFetch(w http.ResponseWriter, r *http.Request) {

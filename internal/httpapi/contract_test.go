@@ -78,6 +78,36 @@ func TestAdminAPIContract(t *testing.T) {
 	}
 	step(200, "GET", "/api/v1/events/"+ev.ID+"/responses", "")
 
+	// party invite: create-or-get link → guest list → guest removal →
+	// revoke. Runs before the cancel below — RSVP on a cancelled event
+	// is ErrCancelled by design.
+	var inv map[string]string
+	w = do(t, h, "POST", "/api/v1/events/"+ev.ID+"/invite", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("create invite: %d %s", w.Code, w.Body)
+	}
+	decode(t, w.Body.String(), &inv)
+	if !strings.Contains(inv["invite_url"], "/i/") {
+		t.Fatalf("invite payload: %v", inv)
+	}
+	itok := strings.TrimPrefix(inv["invite_url"], "http://x.local/i/")
+	if _, err := svc.RSVP(itok, core.RSVPInput{Name: "Guest", Status: core.GuestYes}); err != nil {
+		t.Fatal(err)
+	}
+	var inviteSt core.InviteStatus
+	w = do(t, h, "GET", "/api/v1/events/"+ev.ID+"/guests", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("guests: %d %s", w.Code, w.Body)
+	}
+	decode(t, w.Body.String(), &inviteSt)
+	if !inviteSt.Active || len(inviteSt.Guests) != 1 {
+		t.Fatalf("invite status payload: %+v", inviteSt)
+	}
+	step(200, "DELETE", "/api/v1/events/"+ev.ID+"/guests/"+inviteSt.Guests[0].ID, "")
+	step(404, "DELETE", "/api/v1/events/"+ev.ID+"/guests/"+inviteSt.Guests[0].ID, "")
+	step(200, "DELETE", "/api/v1/events/"+ev.ID+"/invite", "")
+	step(404, "DELETE", "/api/v1/events/"+ev.ID+"/invite", "")
+
 	// lifecycle over HTTP: confirm → move (resets cycle) → cancel →
 	// confirm on cancelled must map to 409 → propagation → reinstate
 	step(200, "POST", "/api/v1/events/"+ev.ID+"/confirm", "")

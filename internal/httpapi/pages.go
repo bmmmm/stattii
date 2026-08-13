@@ -25,6 +25,22 @@ type portalData struct {
 	Token string
 }
 
+// inviteData deliberately carries no Guest record: the echoed answer is
+// only ever the values the visitor themselves just submitted — echoing the
+// stored record would be an email-enumeration oracle (type a name, read
+// that person's address).
+type inviteData struct {
+	View     core.InviteView
+	Token    string
+	Done     bool             // an answer was just recorded
+	Recorded core.GuestStatus // ...and it was this one
+	Conflict bool             // answered after the party was already cancelled
+	Err      string           // validation message; form repopulates below
+	Name     string
+	Email    string
+	Note     string
+}
+
 var tmpl = template.Must(template.New("").Parse(`
 {{define "head"}}<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -83,6 +99,35 @@ details{margin:.5rem 0}
     <p class="muted">A proposal does not change anything by itself — the organizer decides.</p>
   </details>
 {{end}}
+</body></html>{{end}}
+
+{{define "invite"}}{{template "head"}}
+<h1>You are invited</h1>
+<div class="card">{{template "event" .View.Event}}</div>
+{{if .Conflict}}
+  <p>This party was <strong>cancelled</strong> — your answer was not recorded.</p>
+{{else if .Done}}
+  {{if eq .Recorded "yes"}}<p><strong>Thanks, {{.Name}} — you are on the list.</strong></p>
+  {{else}}<p><strong>Thanks, {{.Name}} — recorded: you cannot make it.</strong></p>{{end}}
+  <p class="muted">Changed your mind? Answer again below — the newest answer per name counts.</p>
+{{end}}
+{{if eq .View.Event.Status "cancelled"}}
+  <p>This party is <strong>cancelled</strong>. Nothing to do.</p>
+{{else}}
+  {{if .Err}}<p><strong>{{.Err}}</strong></p>{{end}}
+  <div class="card">
+  <form method="post" action="/i/{{.Token}}">
+    <p><label>Your name <input name="name" required maxlength="80" value="{{.Name}}"></label></p>
+    <p><label>Email <input type="email" name="email" maxlength="200" value="{{.Email}}" placeholder="optional"></label><br>
+    <span class="muted">Used only to tell you if the party is cancelled or moved.</span></p>
+    <p><label>Message <input name="note" maxlength="280" value="{{.Note}}" placeholder="optional"></label></p>
+    <button class="yes" type="submit" name="status" value="yes">I am coming</button>
+    <button class="no" type="submit" name="status" value="no">I cannot make it</button>
+  </form>
+  <p class="muted">Use the name your host knows you by — answering again with the same name updates your answer.</p>
+  </div>
+{{end}}
+<p class="muted">{{.View.Yes}} coming · {{.View.No}} cannot make it</p>
 </body></html>{{end}}
 
 {{define "portal"}}{{template "head"}}

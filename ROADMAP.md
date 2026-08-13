@@ -22,6 +22,11 @@
   occurrences as events (start changes run the move transaction; vanished
   is reported, never cancelled), series responsibles, per-recipient
   tracking timeline + test messages in the panel, `/api/v1` contract test.
+- **Party invitations** (unreleased) — one shared `/i/<token>` link per
+  event: invitees self-register (name, optional email, yes/no; answering
+  again under the same name updates), aggregate-only public page, guest
+  list + link management in panel/API/CLI (`event invite` / `event
+  guests`), guests with an address join the cancel/move/reinstate fan-out.
 
 ## Phase 2 — production go-live
 
@@ -88,3 +93,10 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
   address to itself lands only in Sent/All Mail, never the inbox — a
   self-round-trip "did not arrive" is Gmail dedup, not a delivery failure.
   Test deliverability cross-provider.
+- **Guest fan-out is status-blind**: a party guest who left an address gets
+  cancel/move/reinstate notices regardless of their yes/no — the decliner
+  declined the *old* date, and a "no" who shows up anyway is the classic
+  locked-door victim. Consequence: guests gate `propagation.complete`, so
+  RSVP validates addresses strictly (reject now, never fail forever).
+  Guests are deliberately not People — no portal token, no trust level,
+  and the reminder/deadline scheduler never sees them.

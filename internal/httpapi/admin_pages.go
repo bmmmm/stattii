@@ -151,6 +151,24 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 </details>
 </div>
 
+<div class="card">
+<h2>Party invite</h2>
+{{if .Invite.Active}}
+  <p>One link for everyone: <a href="{{.Invite.URL}}">{{.Invite.URL}}</a>
+  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/invite/revoke"><button class="no" type="submit">Revoke link</button></form></p>
+  <p>{{.Invite.Yes}} coming · {{.Invite.No}} cannot make it</p>
+{{else}}
+  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/invite"><button class="yes" type="submit">Create invite link</button></form>
+  <p class="muted">One link, shared with everyone — invitees register themselves.</p>
+{{end}}
+{{range .Invite.Guests}}
+  <p><span class="chip {{if eq .Status "yes"}}ok{{else}}bad{{end}}">{{if eq .Status "yes"}}✓{{else}}✗{{end}} {{.Name}}</span>
+  <span class="muted">{{if .Email}}{{.Email}}{{else}}no address — cannot be told about a cancellation{{end}} · {{.UpdatedAt.Format "02 Jan 15:04"}}{{if .Note}} — {{.Note}}{{end}}</span>
+  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/guests/{{.ID}}/remove"><button type="submit">Remove</button></form></p>
+{{end}}
+{{if and .Invite.Active (not .Invite.Guests)}}<p class="muted">nobody has answered yet</p>{{end}}
+</div>
+
 {{if .Propagation.Total}}
 <div class="card">
 <h2>Propagation (broadcasts &amp; fan-out)</h2>

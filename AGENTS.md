@@ -29,7 +29,10 @@ people stood in front of a locked door. That failure mode drives the design.
 2. **Every outbound message goes through the outbox.** No direct sends —
    retries, delivery proof, and escalation depend on it.
 3. **Cancel / move / reinstate are propagation transactions** (`fanOutLocked`):
-   a status flip without outward fan-out recreates the locked-door bug.
+   a status flip without outward fan-out — to every broadcast target, every
+   assignee channel, and every party guest who left an address — recreates
+   the locked-door bug. Guest fan-out is status-blind (a decliner still
+   needs the move notice); guarded by `TestGuestsGetCancellationFanOut`.
 4. **stdlib only.** Any new dependency needs a stated justification.
 5. **Tokens are random, DB-looked-up, revocable.** Never JWT, never decodable.
 6. **Secrets never in tracked files.** `config.json` is gitignored; the

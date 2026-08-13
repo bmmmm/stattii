@@ -171,9 +171,12 @@ type Button struct {
 // OutboxItem is one pending or delivered outbound message. All sends go
 // through the outbox so retries, delivery proof, and escalation are uniform.
 type OutboxItem struct {
-	ID          string            `json:"id"`
-	EventID     string            `json:"event_id,omitempty"`
-	PersonID    string            `json:"person_id,omitempty"`
+	ID       string `json:"id"`
+	EventID  string `json:"event_id,omitempty"`
+	PersonID string `json:"person_id,omitempty"`
+	// GuestID marks items addressed to a party guest — never reuse PersonID
+	// for that, the admin timeline joins on it and would mis-attribute.
+	GuestID     string            `json:"guest_id,omitempty"`
 	Purpose     string            `json:"purpose"` // "reminder" | "cancellation" | "moved" | "reinstated" | "proposal" | "escalation" | "webhook"
 	Kind        string            `json:"kind"`    // channel kind
 	To          string            `json:"to"`
@@ -205,6 +208,10 @@ type State struct {
 	// Calendar import: per-series responsibles and the last fetch report.
 	SeriesAssignments []SeriesAssignment `json:"series_assignments,omitempty"`
 	LastImport        *ImportReport      `json:"last_import,omitempty"`
+	// Party invitations: one shared link per event plus its self-registered
+	// guests. omitempty keeps pre-invite state.json files loading unchanged.
+	Invites []InviteLink `json:"invites,omitempty"`
+	Guests  []Guest      `json:"guests,omitempty"`
 }
 
 func (s *State) Event(id string) *Event {

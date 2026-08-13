@@ -317,8 +317,9 @@ func (s *Service) moveLocked(eventID string, start, end time.Time, note, actor s
 	return *e, nil
 }
 
-// fanOutLocked enqueues one outbox item per broadcast target and per
-// assignee channel — the delivery proof for outward communication.
+// fanOutLocked enqueues one outbox item per broadcast target, assignee
+// channel, and reachable party guest — the delivery proof for outward
+// communication.
 func (s *Service) fanOutLocked(e *Event, purpose, subject, body string) {
 	for _, b := range s.state.Broadcasts {
 		s.enqueueLocked(OutboxItem{
@@ -328,6 +329,20 @@ func (s *Service) fanOutLocked(e *Event, purpose, subject, body string) {
 	}
 	for _, p := range s.state.Assignees(e.ID) {
 		s.enqueueToPersonLocked(p, OutboxItem{EventID: e.ID, Purpose: purpose, Subject: subject, Body: body})
+	}
+	// Party guests who left an address are outward recipients like any
+	// other: a guest we cannot tell about a cancellation is exactly the
+	// locked door this product exists to prevent. Status is deliberately
+	// NOT filtered — a decliner still needs to know the party moved, and
+	// a "no" who comes anyway is the classic victim.
+	for _, g := range s.state.GuestsFor(e.ID) {
+		if g.Email == "" {
+			continue
+		}
+		s.enqueueLocked(OutboxItem{
+			EventID: e.ID, GuestID: g.ID, Purpose: purpose,
+			Kind: "email", To: g.Email, Subject: subject, Body: body,
+		})
 	}
 }
 

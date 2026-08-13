@@ -64,8 +64,9 @@ needed). The links in the message text remain as fallback.
 ## Cancellation propagation
 
 `stattii event cancel <id> --reason "storm"` (or a responsible person's
-click) flips the status **and** fans out to all broadcast targets and
-assignees through a persistent outbox with retries and exponential backoff.
+click) flips the status **and** fans out to all broadcast targets,
+assignees, and party guests who left an address, through a persistent
+outbox with retries and exponential backoff.
 
 ```sh
 stattii event propagation <id>   # {total, delivered, pending, failed, complete}
@@ -82,6 +83,29 @@ admin ping) `--deadline-lead` (default 24h) before start. Events created
 with `--if-unconfirmed cancel` go further: silence auto-cancels them with
 full propagation — the dead-man-switch for "nobody checked, so nobody
 stands in front of a locked door".
+
+## Party invitations
+
+Any event can double as a party invitation: one shared link, invitees
+register themselves.
+
+```sh
+stattii event invite <id>            # mint (or re-print) the shared /i/<token> link
+stattii event guests <id>            # who said yes / no
+stattii event invite <id> --revoke   # close the list (guests keep getting notices)
+```
+
+Whoever opens the link enters a name, an optional email, and yes/no —
+answering again under the same name updates the answer. The page shows
+aggregate counts only, never other guests' names or addresses; the full
+list lives in the admin panel and API.
+
+A guest who left an email is an outward recipient like any other: cancel,
+move, and reinstate reach them through the outbox and count toward
+`propagation`. That cuts both ways — a typo'd address shows up as a failed
+delivery and escalates to the admin instead of silently going nowhere.
+Guests never receive confirmation reminders; those stay with the
+responsible people.
 
 ## Configuration
 
@@ -177,15 +201,16 @@ infrastructure, every visitor shares one rate-limit bucket.
 ## API
 
 Everything the CLI does is plain REST under `/api/v1` (bearer auth):
-events (`create/confirm/cancel/move/reinstate/links/responses/propagation`),
-people (incl. test messages), assignments, series-assignments, broadcasts,
-webhooks, proposals, audit, overview, `tick`, `calendar/fetch`. Webhook
+events (`create/confirm/cancel/move/reinstate/links/responses/propagation`
+plus `invite` and `guests` for party invitations), people (incl. test
+messages), assignments, series-assignments, broadcasts, webhooks,
+proposals, audit, overview, `tick`, `calendar/fetch`. Webhook
 payloads are signed: `X-Stattii-Signature: sha256=<hex hmac of body>` with
 the per-subscription secret returned **once, on registration** (the list
 endpoint redacts it).
 
-Public surface (rate-limited): the tokenized `/a/<token>` and
-`/p/<token>` pages, plus `/feed.ics` and `/healthz`. The feed is
+Public surface (rate-limited): the tokenized `/a/<token>`, `/p/<token>`,
+and `/i/<token>` pages, plus `/feed.ics` and `/healthz`. The feed is
 unauthenticated and lists all events — treat its URL accordingly. Note
 calendar apps poll ICS feeds slowly (Google: ~12–24 h) — the feed is the
 passive baseline; short-notice cancellations travel through the active

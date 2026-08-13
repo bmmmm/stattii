@@ -27,6 +27,7 @@ type Server struct {
 	adminToken     string
 	limiter        *limiter
 	loginLimiter   *limiter
+	rsvpLimiter    *limiter
 	calName        string
 	trustedProxies []*net.IPNet
 }
@@ -41,6 +42,7 @@ func New(svc *core.Service, adminToken, calName string, trustedProxies []*net.IP
 	}
 	return &Server{svc: svc, adminToken: adminToken, limiter: newLimiter(30, time.Minute),
 		loginLimiter: newLimiter(5, time.Minute),
+		rsvpLimiter:  newLimiter(10, time.Minute),
 		calName:      calName, trustedProxies: trustedProxies}
 }
 
@@ -87,6 +89,8 @@ func (s *Server) PublicHandler() http.Handler {
 	mux.HandleFunc("GET /p/{token}", s.public(s.portalPage))
 	mux.HandleFunc("POST /p/{token}/respond", s.public(s.portalRespond))
 	mux.HandleFunc("POST /p/{token}/submit", s.public(s.portalSubmit))
+	mux.HandleFunc("GET /i/{token}", s.public(s.invitePage))
+	mux.HandleFunc("POST /i/{token}", s.public(s.inviteRSVP))
 	mux.HandleFunc("GET /feed.ics", s.public(s.feed))
 	mux.HandleFunc("GET /healthz", healthz)
 	return mux
@@ -98,35 +102,39 @@ func (s *Server) PublicHandler() http.Handler {
 func (s *Server) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	api := map[string]http.HandlerFunc{
-		"GET /api/v1/events":                    s.listEvents,
-		"POST /api/v1/events":                   s.createEvent,
-		"GET /api/v1/events/{id}":               s.getEvent,
-		"POST /api/v1/events/{id}/confirm":      s.confirmEvent,
-		"POST /api/v1/events/{id}/cancel":       s.cancelEvent,
-		"POST /api/v1/events/{id}/move":         s.moveEvent,
-		"POST /api/v1/events/{id}/reinstate":    s.reinstateEvent,
-		"GET /api/v1/outbox":                    s.listOutbox,
-		"POST /api/v1/outbox/{id}/retry":        s.retryOutbox,
-		"POST /api/v1/events/{id}/links":        s.makeLinks,
-		"GET /api/v1/events/{id}/responses":     s.eventResponses,
-		"GET /api/v1/events/{id}/propagation":   s.propagation,
-		"GET /api/v1/people":                    s.listPeople,
-		"POST /api/v1/people":                   s.createPerson,
-		"POST /api/v1/people/{id}/test-message": s.testMessage,
-		"POST /api/v1/assignments":              s.assign,
-		"GET /api/v1/proposals":                 s.listProposals,
-		"POST /api/v1/proposals/{id}/decide":    s.decideProposal,
-		"GET /api/v1/broadcasts":                s.listBroadcasts,
-		"POST /api/v1/broadcasts":               s.createBroadcast,
-		"DELETE /api/v1/broadcasts/{id}":        s.deleteBroadcast,
-		"GET /api/v1/webhooks":                  s.listWebhooks,
-		"POST /api/v1/webhooks":                 s.createWebhook,
-		"DELETE /api/v1/webhooks/{id}":          s.deleteWebhook,
-		"GET /api/v1/audit":                     s.audit,
-		"GET /api/v1/overview":                  s.overview,
-		"POST /api/v1/tick":                     s.tick,
-		"POST /api/v1/calendar/fetch":           s.calendarFetch,
-		"POST /api/v1/series-assignments":       s.createSeriesAssignment,
+		"GET /api/v1/events":                      s.listEvents,
+		"POST /api/v1/events":                     s.createEvent,
+		"GET /api/v1/events/{id}":                 s.getEvent,
+		"POST /api/v1/events/{id}/confirm":        s.confirmEvent,
+		"POST /api/v1/events/{id}/cancel":         s.cancelEvent,
+		"POST /api/v1/events/{id}/move":           s.moveEvent,
+		"POST /api/v1/events/{id}/reinstate":      s.reinstateEvent,
+		"GET /api/v1/outbox":                      s.listOutbox,
+		"POST /api/v1/outbox/{id}/retry":          s.retryOutbox,
+		"POST /api/v1/events/{id}/links":          s.makeLinks,
+		"GET /api/v1/events/{id}/responses":       s.eventResponses,
+		"GET /api/v1/events/{id}/propagation":     s.propagation,
+		"POST /api/v1/events/{id}/invite":         s.createInvite,
+		"DELETE /api/v1/events/{id}/invite":       s.revokeInvite,
+		"GET /api/v1/events/{id}/guests":          s.listGuests,
+		"DELETE /api/v1/events/{id}/guests/{gid}": s.removeGuest,
+		"GET /api/v1/people":                      s.listPeople,
+		"POST /api/v1/people":                     s.createPerson,
+		"POST /api/v1/people/{id}/test-message":   s.testMessage,
+		"POST /api/v1/assignments":                s.assign,
+		"GET /api/v1/proposals":                   s.listProposals,
+		"POST /api/v1/proposals/{id}/decide":      s.decideProposal,
+		"GET /api/v1/broadcasts":                  s.listBroadcasts,
+		"POST /api/v1/broadcasts":                 s.createBroadcast,
+		"DELETE /api/v1/broadcasts/{id}":          s.deleteBroadcast,
+		"GET /api/v1/webhooks":                    s.listWebhooks,
+		"POST /api/v1/webhooks":                   s.createWebhook,
+		"DELETE /api/v1/webhooks/{id}":            s.deleteWebhook,
+		"GET /api/v1/audit":                       s.audit,
+		"GET /api/v1/overview":                    s.overview,
+		"POST /api/v1/tick":                       s.tick,
+		"POST /api/v1/calendar/fetch":             s.calendarFetch,
+		"POST /api/v1/series-assignments":         s.createSeriesAssignment,
 	}
 	for pattern, h := range api {
 		mux.HandleFunc(pattern, s.auth(h))
@@ -288,6 +296,60 @@ func (s *Server) portalSubmit(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/p/"+token+suffix, http.StatusSeeOther)
 }
 
+func (s *Server) invitePage(w http.ResponseWriter, r *http.Request) {
+	v, err := s.svc.ResolveInvite(r.PathValue("token"))
+	if err != nil {
+		s.renderError(w, err)
+		return
+	}
+	s.render(w, "invite", inviteData{View: v, Token: r.PathValue("token")})
+}
+
+func (s *Server) inviteRSVP(w http.ResponseWriter, r *http.Request) {
+	// The shared 30/min public bucket would let one client fill a whole
+	// guest list inside a minute — answers get their own, tighter budget.
+	if !s.rsvpLimiter.allow(s.clientIP(r)) {
+		http.Error(w, "too many answers — try again in a minute", http.StatusTooManyRequests)
+		return
+	}
+	token := r.PathValue("token")
+	in := core.RSVPInput{
+		Name:   r.FormValue("name"),
+		Email:  r.FormValue("email"),
+		Status: core.GuestStatus(r.FormValue("status")),
+		Note:   r.FormValue("note"),
+	}
+	g, err := s.svc.RSVP(token, in)
+	if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrGone) {
+		s.renderError(w, err)
+		return
+	}
+	v, verr := s.svc.ResolveInvite(token)
+	if verr != nil {
+		s.renderError(w, verr)
+		return
+	}
+	// Re-render instead of redirect-after-POST: the upsert is idempotent
+	// by name, so a refresh re-submitting the form is harmless — and a
+	// redirect would need the identity smuggled through a query string
+	// just to say "recorded".
+	switch {
+	case err == nil:
+		s.render(w, "invite", inviteData{View: v, Token: token, Done: true,
+			Recorded: g.Status, Name: g.Name, Email: in.Email, Note: g.Note})
+	case errors.Is(err, core.ErrCancelled):
+		s.render(w, "invite", inviteData{View: v, Token: token, Conflict: true})
+	default:
+		// Validation slip: keep the visitor on the party page with the
+		// form repopulated — renderError would strand them on "ask the
+		// organizer for a fresh link".
+		renderTo(w, tmpl, "invite", http.StatusBadRequest, inviteData{
+			View: v, Token: token, Err: err.Error(),
+			Name: in.Name, Email: in.Email, Note: in.Note,
+		})
+	}
+}
+
 func (s *Server) feed(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
 	w.Write([]byte(ics.Feed(s.calName, s.svc.Events(), time.Now())))
@@ -372,6 +434,26 @@ func (s *Server) makeLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	c, x, err := s.svc.GenerateLinks(r.PathValue("id"), in.PersonID)
 	respond(w, map[string]string{"confirm_url": c, "cancel_url": x}, err, http.StatusOK)
+}
+
+// createInvite is create-or-get and therefore idempotent — 200, not 201.
+func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
+	url, err := s.svc.CreateInvite(r.PathValue("id"))
+	respond(w, map[string]string{"invite_url": url}, err, http.StatusOK)
+}
+
+func (s *Server) revokeInvite(w http.ResponseWriter, r *http.Request) {
+	respond(w, map[string]string{"status": "revoked"}, s.svc.RevokeInvite(r.PathValue("id")), http.StatusOK)
+}
+
+func (s *Server) listGuests(w http.ResponseWriter, r *http.Request) {
+	st, err := s.svc.Invite(r.PathValue("id"))
+	respond(w, st, err, http.StatusOK)
+}
+
+func (s *Server) removeGuest(w http.ResponseWriter, r *http.Request) {
+	respond(w, map[string]string{"status": "removed"},
+		s.svc.RemoveGuest(r.PathValue("id"), r.PathValue("gid")), http.StatusOK)
 }
 
 func (s *Server) eventResponses(w http.ResponseWriter, r *http.Request) {

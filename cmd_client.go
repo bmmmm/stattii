@@ -163,7 +163,7 @@ func cmdClient(args []string) error {
 
 func cmdEvent(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii event list|create|show|confirm|cancel|reinstate|move|links|responses|propagation")
+		return fmt.Errorf("usage: stattii event list|create|show|confirm|cancel|reinstate|move|links|responses|propagation|invite|guests")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -243,6 +243,22 @@ func cmdEvent(args []string) error {
 			return fmt.Errorf("usage: stattii event links <event-id> <person-id>")
 		}
 		return api("POST", "/api/v1/events/"+rest[0]+"/links", map[string]string{"person_id": rest[1]})
+	case "invite":
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: stattii event invite <event-id> [--revoke]")
+		}
+		fs := flag.NewFlagSet("event invite", flag.ExitOnError)
+		revoke := fs.Bool("revoke", false, "revoke the current invite link (guests keep getting notices)")
+		fs.Parse(rest[1:])
+		if *revoke {
+			return api("DELETE", "/api/v1/events/"+rest[0]+"/invite", nil)
+		}
+		return api("POST", "/api/v1/events/"+rest[0]+"/invite", map[string]any{})
+	case "guests":
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: stattii event guests <event-id>")
+		}
+		return api("GET", "/api/v1/events/"+rest[0]+"/guests", nil)
 	default:
 		return fmt.Errorf("unknown event subcommand %q", sub)
 	}
