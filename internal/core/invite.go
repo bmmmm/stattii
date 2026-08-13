@@ -114,14 +114,23 @@ type InviteView struct {
 	No    int   `json:"no"`
 }
 
+// GuestView is a Guest plus the answer to the operator's real question
+// after a cancellation: did this guest actually get the notice? Joined
+// from the outbox via OutboxItem.GuestID.
+type GuestView struct {
+	Guest
+	LastNotice  string `json:"last_notice,omitempty"`  // "cancellation" | "moved" | "reinstated"
+	NoticeState string `json:"notice_state,omitempty"` // "delivered" | "pending" | "failed"
+}
+
 // InviteStatus is the operator's view of one event's invitation.
 type InviteStatus struct {
-	EventID string  `json:"event_id"`
-	URL     string  `json:"url,omitempty"`
-	Active  bool    `json:"active"`
-	Yes     int     `json:"yes"`
-	No      int     `json:"no"`
-	Guests  []Guest `json:"guests"`
+	EventID string      `json:"event_id"`
+	URL     string      `json:"url,omitempty"`
+	Active  bool        `json:"active"`
+	Yes     int         `json:"yes"`
+	No      int         `json:"no"`
+	Guests  []GuestView `json:"guests"`
 }
 
 func (s *State) GuestsFor(eventID string) []*Guest {
@@ -290,13 +299,27 @@ func (s *Service) Invite(eventID string) (InviteStatus, error) {
 	if s.state.Event(eventID) == nil {
 		return InviteStatus{}, ErrNotFound
 	}
-	st := InviteStatus{EventID: eventID, Guests: []Guest{}}
+	st := InviteStatus{EventID: eventID, Guests: []GuestView{}}
 	if l := s.activeInviteLocked(eventID); l != nil {
 		st.Active = true
 		st.URL = s.inviteURL(l.Token)
 	}
+	// Newest propagation notice per guest; the outbox is append-only, so
+	// the last match wins.
+	type notice struct{ purpose, state string }
+	latest := map[string]notice{}
+	for _, o := range s.state.Outbox {
+		if o.GuestID == "" || o.EventID != eventID {
+			continue
+		}
+		switch o.Purpose {
+		case "cancellation", "moved", "reinstated":
+			latest[o.GuestID] = notice{o.Purpose, s.outboxState(o)}
+		}
+	}
 	for _, g := range s.state.GuestsFor(eventID) {
-		st.Guests = append(st.Guests, *g)
+		n := latest[g.ID]
+		st.Guests = append(st.Guests, GuestView{Guest: *g, LastNotice: n.purpose, NoticeState: n.state})
 		switch g.Status {
 		case GuestYes:
 			st.Yes++

@@ -277,6 +277,34 @@ func TestGuestCapAllowsAnswerChange(t *testing.T) {
 	}
 }
 
+// TestInviteShowsGuestDeliveryState: the guest list answers "did they get
+// the cancellation?" per guest, joined from the outbox via GuestID.
+func TestInviteShowsGuestDeliveryState(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	e := mustEvent(t, svc, 40*time.Hour)
+	tok := inviteToken(t, svc, e.ID)
+	mustRSVP(t, svc, tok, RSVPInput{Name: "Ana", Email: "ana@party.example", Status: GuestYes})
+	mustRSVP(t, svc, tok, RSVPInput{Name: "Caro", Status: GuestYes}) // unreachable
+
+	if _, err := svc.CancelEvent(e.ID, "", "storm", "api"); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := svc.Invite(e.ID)
+	if st.Guests[0].LastNotice != "cancellation" || st.Guests[0].NoticeState != "pending" {
+		t.Fatalf("before tick: %+v", st.Guests[0])
+	}
+	if st.Guests[1].NoticeState != "" {
+		t.Fatalf("addressless guest has a delivery state: %+v", st.Guests[1])
+	}
+
+	svc.Tick(*clock)
+	st, _ = svc.Invite(e.ID)
+	if st.Guests[0].NoticeState != "delivered" {
+		t.Fatalf("after tick: %+v", st.Guests[0])
+	}
+}
+
 // TestGuestsAreNotAssignees: guests must never enter the attestation cycle —
 // no reminder ("will it take place?") may ever reach a guest address.
 func TestGuestsAreNotAssignees(t *testing.T) {

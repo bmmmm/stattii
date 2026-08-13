@@ -164,6 +164,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{range .Invite.Guests}}
   <p><span class="chip {{if eq .Status "yes"}}ok{{else}}bad{{end}}">{{if eq .Status "yes"}}✓{{else}}✗{{end}} {{.Name}}</span>
   <span class="muted">{{if .Email}}{{.Email}}{{else}}no address — cannot be told about a cancellation{{end}} · {{.UpdatedAt.Format "02 Jan 15:04"}}{{if .Note}} — {{.Note}}{{end}}</span>
+  {{if .NoticeState}}<span class="{{if eq .NoticeState "failed"}}bad{{else}}muted{{end}}">{{if eq .NoticeState "delivered"}}✓{{else if eq .NoticeState "failed"}}✗{{else}}…{{end}} {{.LastNotice}} {{.NoticeState}}</span>{{end}}
   <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/guests/{{.ID}}/remove"><button type="submit">Remove</button></form></p>
 {{end}}
 {{if and .Invite.Active (not .Invite.Guests)}}<p class="muted">nobody has answered yet</p>{{end}}
