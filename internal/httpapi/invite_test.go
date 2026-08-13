@@ -95,14 +95,18 @@ func TestInvitePageHidesGuestNames(t *testing.T) {
 		t.Fatalf("public page misses the counts:\n%s", body)
 	}
 
-	// Re-answering under an existing name with a blank email must not echo
-	// the stored address back.
-	w = doForm(t, pub, path, url.Values{"name": {"Ana"}, "status": {"no"}}, nil)
+	// Re-answering under an existing name must echo only the submitted
+	// values: the stored email would be an enumeration oracle, and the
+	// stored spelling would confirm the name exists on the list.
+	w = doForm(t, pub, path, url.Values{"name": {"aNa"}, "status": {"no"}}, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("re-answer: %d", w.Code)
 	}
 	if strings.Contains(w.Body.String(), "ana@party.example") {
 		t.Fatal("POST echoed a stored email — enumeration oracle")
+	}
+	if strings.Contains(w.Body.String(), "Thanks, Ana") {
+		t.Fatal("POST echoed the stored spelling — name-existence oracle")
 	}
 }
 

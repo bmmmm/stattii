@@ -187,6 +187,45 @@ func TestRSVPKeepsExistingEmailOnBlankResubmit(t *testing.T) {
 	}
 }
 
+// TestRSVPCannotHijackStoredEmail: the upsert key is just a name anyone
+// with the link can type — a re-answer with a different address must not
+// swap the stored one, or the taker inherits the cancellation notice and
+// the real guest goes dark behind a green delivery mark.
+func TestRSVPCannotHijackStoredEmail(t *testing.T) {
+	svc, _ := newTestService(t, &fakeNotifier{})
+	e := mustEvent(t, svc, 40*time.Hour)
+	tok := inviteToken(t, svc, e.ID)
+
+	mustRSVP(t, svc, tok, RSVPInput{Name: "Ana", Email: "ana@party.example", Status: GuestYes})
+	g := mustRSVP(t, svc, tok, RSVPInput{Name: "ana", Email: "attacker@evil.example", Status: GuestNo})
+	if g.Email != "ana@party.example" {
+		t.Fatalf("re-answer swapped the stored email to %q", g.Email)
+	}
+	if g.Status != GuestNo {
+		t.Fatal("the answer itself must still update")
+	}
+}
+
+// TestGuestFanOutDedupesAddresses: the same address enrolled under two
+// names gets one notice, not two — dedup happens at fan-out, silently,
+// so rejecting duplicates cannot become an address-existence oracle.
+func TestGuestFanOutDedupesAddresses(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	e := mustEvent(t, svc, 40*time.Hour)
+	tok := inviteToken(t, svc, e.ID)
+	mustRSVP(t, svc, tok, RSVPInput{Name: "Ana", Email: "ana@party.example", Status: GuestYes})
+	mustRSVP(t, svc, tok, RSVPInput{Name: "Also Ana", Email: "Ana@Party.example", Status: GuestYes})
+
+	if _, err := svc.CancelEvent(e.ID, "", "storm", "api"); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(*clock)
+	if got := fake.byPurposeTo("ana@party.example"); len(got) != 1 {
+		t.Fatalf("duplicate address got %d notices, want 1", len(got))
+	}
+}
+
 func TestRSVPRejectsBadInput(t *testing.T) {
 	svc, _ := newTestService(t, &fakeNotifier{})
 	e := mustEvent(t, svc, 40*time.Hour)

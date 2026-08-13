@@ -334,11 +334,15 @@ func (s *Service) fanOutLocked(e *Event, purpose, subject, body string) {
 	// other: a guest we cannot tell about a cancellation is exactly the
 	// locked door this product exists to prevent. Status is deliberately
 	// NOT filtered — a decliner still needs to know the party moved, and
-	// a "no" who comes anyway is the classic victim.
+	// a "no" who comes anyway is the classic victim. One mail per address:
+	// the same address enrolled under several names is a duplicate (or a
+	// flood attempt), not two recipients.
+	seen := map[string]bool{}
 	for _, g := range s.state.GuestsFor(e.ID) {
-		if g.Email == "" {
+		if g.Email == "" || seen[strings.ToLower(g.Email)] {
 			continue
 		}
+		seen[strings.ToLower(g.Email)] = true
 		s.enqueueLocked(OutboxItem{
 			EventID: e.ID, GuestID: g.ID, Purpose: purpose,
 			Kind: "email", To: g.Email, Subject: subject, Body: body,

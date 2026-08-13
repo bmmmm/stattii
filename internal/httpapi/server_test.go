@@ -193,8 +193,12 @@ func TestAdminAPIAbsentFromPublic(t *testing.T) {
 		{"GET", "/api/v1/audit"},
 		{"POST", "/api/v1/tick"},
 		// The guest list is exactly the payload that must never be
-		// reachable on the public mux.
+		// reachable on the public mux — and route registration is
+		// per-pattern, so every mutating member gets its own probe.
 		{"GET", "/api/v1/events/ev_x/guests"},
+		{"POST", "/api/v1/events/ev_x/invite"},
+		{"DELETE", "/api/v1/events/ev_x/invite"},
+		{"DELETE", "/api/v1/events/ev_x/guests/gu_x"},
 	} {
 		if w := do(t, pub, probe.method, probe.path, testToken, ""); w.Code != http.StatusNotFound {
 			t.Fatalf("%s %s on public mux: got %d, want 404", probe.method, probe.path, w.Code)

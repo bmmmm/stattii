@@ -60,6 +60,10 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
   demands it (a few hundred events/year will not).
 - Localization hooks — English UI confirmed OK for now (2026-08-12).
 - Admin token scopes (read-only vs. admin API tokens).
+- Guest double-opt-in (confirm-your-address mail before joining the
+  notice list): v1 accepts that link possession is the only gate and
+  leans on rate limit + cap + address dedup + write-once addresses;
+  a per-audience notice wording would ride along with this.
 
 ## Learnings (why things are the way they are)
 

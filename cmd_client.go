@@ -256,7 +256,13 @@ func cmdEvent(args []string) error {
 		return api("POST", "/api/v1/events/"+rest[0]+"/invite", map[string]any{})
 	case "guests":
 		if len(rest) < 1 {
-			return fmt.Errorf("usage: stattii event guests <event-id>")
+			return fmt.Errorf("usage: stattii event guests <event-id> [--remove <guest-id>]")
+		}
+		fs := flag.NewFlagSet("event guests", flag.ExitOnError)
+		remove := fs.String("remove", "", "remove one guest by id")
+		fs.Parse(rest[1:])
+		if *remove != "" {
+			return api("DELETE", "/api/v1/events/"+rest[0]+"/guests/"+*remove, nil)
 		}
 		return api("GET", "/api/v1/events/"+rest[0]+"/guests", nil)
 	default:

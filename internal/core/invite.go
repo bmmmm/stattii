@@ -270,12 +270,15 @@ func (s *Service) RSVP(token string, in RSVPInput) (Guest, error) {
 		})
 		g = &s.state.Guests[len(s.state.Guests)-1]
 	}
-	// A blank email never clears a stored one: anyone with the link can
-	// answer under any name, and silently making a guest unreachable for a
-	// cancellation is exactly the failure this product prevents. Removing
-	// an address is an operator act (remove the guest).
-	emailChanged := in.Email != "" && in.Email != g.Email
-	if in.Email != "" {
+	// The stored address is written once and then only changes through the
+	// operator (remove the guest, let them answer again). The upsert key is
+	// just a name anyone with the link can type: a blank re-submit must not
+	// clear the address, and a non-blank one must not swap it either — that
+	// would redirect the cancellation notice to the taker and leave the real
+	// guest unreachable behind a green delivery mark.
+	emailConflict := in.Email != "" && g.Email != "" && !strings.EqualFold(in.Email, g.Email)
+	emailSet := in.Email != "" && g.Email == ""
+	if emailSet {
 		g.Email = in.Email
 	}
 	g.Status = in.Status
@@ -283,11 +286,15 @@ func (s *Service) RSVP(token string, in RSVPInput) (Guest, error) {
 	g.UpdatedAt = s.now()
 	s.auditLocked("guest.rsvp", map[string]any{
 		"event_id": e.ID, "guest_id": g.ID, "status": g.Status,
-		"new": isNew, "email_changed": emailChanged,
+		"new": isNew, "email_set": emailSet, "email_conflict": emailConflict,
 	})
 	// The one webhook an unauthenticated visitor can trigger — bounded by
-	// the RSVP rate limit and the guest cap; consumers are operator-added.
-	s.fireWebhooksLocked("guest.rsvp", *g)
+	// the RSVP rate limit and the guest cap. Deliberately no name, email,
+	// or note: pre-existing "all events" subscriptions must not start
+	// receiving third-party PII; details live behind the admin API.
+	s.fireWebhooksLocked("guest.rsvp", map[string]any{
+		"event_id": e.ID, "guest_id": g.ID, "status": g.Status, "new": isNew,
+	})
 	s.saveLocked()
 	return *g, nil
 }
@@ -327,7 +334,7 @@ func (s *Service) Invite(eventID string) (InviteStatus, error) {
 			st.No++
 		}
 	}
-	sort.Slice(st.Guests, func(i, j int) bool { return st.Guests[i].CreatedAt.Before(st.Guests[j].CreatedAt) })
+	sort.SliceStable(st.Guests, func(i, j int) bool { return st.Guests[i].CreatedAt.Before(st.Guests[j].CreatedAt) })
 	return st, nil
 }
 

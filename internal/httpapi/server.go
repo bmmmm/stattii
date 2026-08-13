@@ -335,8 +335,11 @@ func (s *Server) inviteRSVP(w http.ResponseWriter, r *http.Request) {
 	// just to say "recorded".
 	switch {
 	case err == nil:
+		// Echo the SUBMITTED values, never the stored record: echoing
+		// g.Name would reveal an existing guest's exact stored spelling
+		// (a name-existence oracle) on any case-variant re-submit.
 		s.render(w, "invite", inviteData{View: v, Token: token, Done: true,
-			Recorded: g.Status, Name: g.Name, Email: in.Email, Note: g.Note})
+			Recorded: g.Status, Name: in.Name, Email: in.Email, Note: in.Note})
 	case errors.Is(err, core.ErrCancelled):
 		s.render(w, "invite", inviteData{View: v, Token: token, Conflict: true})
 	default:

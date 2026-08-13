@@ -107,6 +107,13 @@ delivery and escalates to the admin instead of silently going nowhere.
 Guests never receive confirmation reminders; those stay with the
 responsible people.
 
+The link is the only gate: whoever holds it can enroll addresses without
+proving ownership, so share it deliberately. Mitigations built in: a
+per-client rate limit, a per-event guest cap, one notice per distinct
+address, a stored address that no later re-answer can overwrite, and a
+guest list you can prune in the panel or with `event guests <id>
+--remove <guest-id>`.
+
 ## Configuration
 
 Everything lives in the project folder. Copy `config.example.json` to
