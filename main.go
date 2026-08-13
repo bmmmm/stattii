@@ -35,8 +35,8 @@ Client (uses STATTII_URL and STATTII_TOKEN — point them at the ADMIN listener)
   stattii overview [--all]
   stattii calendar fetch
   stattii series-assign <source-uid> <person-id> [role]
-  stattii event    list | create | show | confirm | cancel | reinstate | move | links | responses | propagation | invite | guests
-  stattii person   list | add | test
+  stattii event    list | create | show | confirm | cancel | reinstate | move | links | revoke-links | responses | propagation | invite | guests
+  stattii person   list | add | test | rotate-portal
   stattii assign   <event-id> <person-id> [role]
   stattii broadcast list | add | rm
   stattii webhook  list | add | rm

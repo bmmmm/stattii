@@ -39,6 +39,8 @@ func (s *Server) registerAdminUI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/people", s.adminAuth(s.adminPeople))
 	mux.HandleFunc("POST /admin/people", s.adminAuth(s.adminPeopleAdd))
 	mux.HandleFunc("POST /admin/people/{id}/test", s.adminAuth(s.adminPeopleTest))
+	mux.HandleFunc("POST /admin/people/{id}/rotate-portal", s.adminAuth(s.adminRotatePortal))
+	mux.HandleFunc("POST /admin/event/{id}/links/revoke", s.adminAuth(s.adminEventRevokeLinks))
 	mux.HandleFunc("POST /admin/calendar/fetch", s.adminAuth(s.adminCalendarFetch))
 	mux.HandleFunc("POST /admin/proposals/{id}", s.adminAuth(s.adminProposalDecide))
 	mux.HandleFunc("POST /admin/outbox/{id}/retry", s.adminAuth(s.adminOutboxRetry))
@@ -335,6 +337,16 @@ func (s *Server) adminEventAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adminAct(w, r, s.svc.Assign(r.PathValue("id"), r.FormValue("person_id"), r.FormValue("role")))
+}
+
+func (s *Server) adminRotatePortal(w http.ResponseWriter, r *http.Request) {
+	_, err := s.svc.RotatePortal(r.PathValue("id"))
+	s.redirectOr(w, r, err, "/admin/people")
+}
+
+func (s *Server) adminEventRevokeLinks(w http.ResponseWriter, r *http.Request) {
+	_, err := s.svc.RevokeLinks(r.PathValue("id"), r.FormValue("person_id"))
+	s.adminAct(w, r, err)
 }
 
 func (s *Server) adminInviteCreate(w http.ResponseWriter, r *http.Request) {

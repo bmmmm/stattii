@@ -121,6 +121,9 @@ func (s *Server) AdminHandler() http.Handler {
 		"GET /api/v1/people":                      s.listPeople,
 		"POST /api/v1/people":                     s.createPerson,
 		"POST /api/v1/people/{id}/test-message":   s.testMessage,
+		"POST /api/v1/people/{id}/rotate-portal":  s.rotatePortal,
+		"DELETE /api/v1/people/{id}/links":        s.revokePersonLinks,
+		"DELETE /api/v1/events/{id}/links":        s.revokeEventLinks,
 		"POST /api/v1/assignments":                s.assign,
 		"GET /api/v1/proposals":                   s.listProposals,
 		"POST /api/v1/proposals/{id}/decide":      s.decideProposal,
@@ -445,6 +448,23 @@ func (s *Server) makeLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	c, x, err := s.svc.GenerateLinks(r.PathValue("id"), in.PersonID)
 	respond(w, map[string]string{"confirm_url": c, "cancel_url": x}, err, http.StatusOK)
+}
+
+func (s *Server) rotatePortal(w http.ResponseWriter, r *http.Request) {
+	url, err := s.svc.RotatePortal(r.PathValue("id"))
+	respond(w, map[string]string{"portal_url": url}, err, http.StatusOK)
+}
+
+// revokeEventLinks kills the event's action links — all of them, or one
+// person's pair via ?person_id=. Regenerate with POST .../links.
+func (s *Server) revokeEventLinks(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.RevokeLinks(r.PathValue("id"), r.URL.Query().Get("person_id"))
+	respond(w, map[string]int{"revoked": n}, err, http.StatusOK)
+}
+
+func (s *Server) revokePersonLinks(w http.ResponseWriter, r *http.Request) {
+	n, err := s.svc.RevokeLinks("", r.PathValue("id"))
+	respond(w, map[string]int{"revoked": n}, err, http.StatusOK)
 }
 
 // createInvite is create-or-get and therefore idempotent — 200, not 201.

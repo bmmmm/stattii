@@ -23,6 +23,22 @@ type PortalView struct {
 	Items      []PortalItem
 }
 
+// RotatePortal replaces a person's portal token: the old /p/ link stops
+// resolving immediately (otherwise a leaked one is valid forever —
+// invariant 5), the new URL is returned for handing over.
+func (s *Service) RotatePortal(personID string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.state.Person(personID)
+	if p == nil {
+		return "", ErrNotFound
+	}
+	p.PortalToken = NewToken()
+	s.auditLocked("portal.rotated", map[string]any{"person_id": personID})
+	s.saveLocked()
+	return s.portalURL(p.PortalToken), nil
+}
+
 func (s *Service) Portal(token string) (PortalView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

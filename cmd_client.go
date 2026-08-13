@@ -163,7 +163,7 @@ func cmdClient(args []string) error {
 
 func cmdEvent(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii event list|create|show|confirm|cancel|reinstate|move|links|responses|propagation|invite|guests")
+		return fmt.Errorf("usage: stattii event list|create|show|confirm|cancel|reinstate|move|links|revoke-links|responses|propagation|invite|guests")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -254,6 +254,15 @@ func cmdEvent(args []string) error {
 			return api("DELETE", "/api/v1/events/"+rest[0]+"/invite", nil)
 		}
 		return api("POST", "/api/v1/events/"+rest[0]+"/invite", map[string]any{})
+	case "revoke-links":
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: stattii event revoke-links <event-id> [person-id]")
+		}
+		path := "/api/v1/events/" + rest[0] + "/links"
+		if len(rest) > 1 {
+			path += "?person_id=" + rest[1]
+		}
+		return api("DELETE", path, nil)
 	case "guests":
 		if len(rest) < 1 {
 			return fmt.Errorf("usage: stattii event guests <event-id> [--remove <guest-id>]")
@@ -272,7 +281,7 @@ func cmdEvent(args []string) error {
 
 func cmdPerson(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii person list|add|test")
+		return fmt.Errorf("usage: stattii person list|add|test|rotate-portal")
 	}
 	switch args[0] {
 	case "list":
@@ -282,6 +291,11 @@ func cmdPerson(args []string) error {
 			return fmt.Errorf("usage: stattii person test <person-id>")
 		}
 		return api("POST", "/api/v1/people/"+args[1]+"/test-message", nil)
+	case "rotate-portal":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: stattii person rotate-portal <person-id>")
+		}
+		return api("POST", "/api/v1/people/"+args[1]+"/rotate-portal", nil)
 	case "add":
 		fs := flag.NewFlagSet("person add", flag.ExitOnError)
 		name := fs.String("name", "", "name (required)")

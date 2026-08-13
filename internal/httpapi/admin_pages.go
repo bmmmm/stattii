@@ -113,7 +113,8 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{if .Ev.Event.SourceUID}}<p class="muted">↻ imported series occurrence</p>{{end}}
 {{if not .Tracks}}<p class="muted">nobody assigned — the reminder waits</p>{{end}}
 {{range .Tracks}}
-  <p><strong>{{.A.Name}}</strong>{{if .A.Role}} ({{.A.Role}}){{end}} <span class="muted">· trust: {{.A.Trust}}</span></p>
+  <p><strong>{{.A.Name}}</strong>{{if .A.Role}} ({{.A.Role}}){{end}} <span class="muted">· trust: {{.A.Trust}}</span>
+  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/links/revoke"><input type="hidden" name="person_id" value="{{.A.PersonID}}"><button type="submit">Revoke links</button></form></p>
   <ul class="tl">
   {{range .Entries}}<li class="{{if .Bad}}bad{{else if .Muted}}muted{{end}}">{{.At.Format "02 Jan 15:04"}}&nbsp; {{.Icon}} {{.Text}}</li>
   {{else}}<li class="muted">nothing sent yet — the reminder goes out {{$.Ev.Event.StartsAt.Format "02 Jan"}} minus the reminder lead</li>{{end}}
@@ -198,6 +199,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
   {{if .LastMsg}}<p class="{{if .LastBad}}bad{{else}}muted{{end}}">{{.LastMsg}}</p>{{end}}
   <p class="muted">Portal: <a href="{{.PortalURL}}">{{.PortalURL}}</a></p>
   <form method="post" action="/admin/people/{{.ID}}/test"><button type="submit">Send test message</button></form>
+  <form method="post" action="/admin/people/{{.ID}}/rotate-portal"><button type="submit">Rotate portal link</button></form>
 </div>
 {{end}}
 

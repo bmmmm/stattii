@@ -211,9 +211,10 @@ infrastructure, every visitor shares one rate-limit bucket.
 
 Everything the CLI does is plain REST under `/api/v1` (bearer auth):
 events (`create/confirm/cancel/move/reinstate/links/responses/propagation`
-plus `invite` and `guests` for party invitations), people (incl. test
-messages), assignments, series-assignments, broadcasts, webhooks,
-proposals, audit, overview, `tick`, `calendar/fetch`. Webhook
+plus `invite` and `guests` for party invitations, and link revocation),
+people (incl. test messages and portal rotation), assignments,
+series-assignments, broadcasts, webhooks, proposals, audit, overview,
+`tick`, `calendar/fetch`. Webhook
 payloads are signed: `X-Stattii-Signature: sha256=<hex hmac of body>` with
 the per-subscription secret returned **once, on registration** (the list
 endpoint redacts it).

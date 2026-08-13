@@ -185,6 +185,29 @@ func TestAdminAPIContract(t *testing.T) {
 	step(404, "POST", "/api/v1/series-assignments",
 		`{"source_uid":"some-series","person_id":"pe_nope"}`)
 
+	// token lifecycle (issue #4): revoke links, rotate the portal
+	var revoked map[string]int
+	w = do(t, h, "DELETE", "/api/v1/events/"+ev.ID+"/links?person_id="+created.Person.ID, testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("revoke links: %d %s", w.Code, w.Body)
+	}
+	decode(t, w.Body.String(), &revoked)
+	if revoked["revoked"] == 0 {
+		t.Fatalf("revoke payload: %v", revoked)
+	}
+	step(404, "DELETE", "/api/v1/events/ev_nope/links", "")
+	step(200, "DELETE", "/api/v1/people/"+created.Person.ID+"/links", "")
+	var rotated map[string]string
+	w = do(t, h, "POST", "/api/v1/people/"+created.Person.ID+"/rotate-portal", testToken, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("rotate portal: %d %s", w.Code, w.Body)
+	}
+	decode(t, w.Body.String(), &rotated)
+	if !strings.Contains(rotated["portal_url"], "/p/") || rotated["portal_url"] == created.PortalURL {
+		t.Fatalf("rotate payload: %v (old %s)", rotated, created.PortalURL)
+	}
+	step(404, "POST", "/api/v1/people/pe_nope/rotate-portal", "")
+
 	// audit + overview
 	step(200, "GET", "/api/v1/audit?limit=5", "")
 	var ov core.Overview

@@ -199,6 +199,9 @@ func TestAdminAPIAbsentFromPublic(t *testing.T) {
 		{"POST", "/api/v1/events/ev_x/invite"},
 		{"DELETE", "/api/v1/events/ev_x/invite"},
 		{"DELETE", "/api/v1/events/ev_x/guests/gu_x"},
+		{"POST", "/api/v1/people/pe_x/rotate-portal"},
+		{"DELETE", "/api/v1/people/pe_x/links"},
+		{"DELETE", "/api/v1/events/ev_x/links"},
 	} {
 		if w := do(t, pub, probe.method, probe.path, testToken, ""); w.Code != http.StatusNotFound {
 			t.Fatalf("%s %s on public mux: got %d, want 404", probe.method, probe.path, w.Code)

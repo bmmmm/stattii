@@ -125,9 +125,11 @@ documented decisions. These are the decisions:
 - **Tokens at rest are plaintext** in `state.json` (0600, encrypted
   backups). Whoever can read the file owns the host anyway; hashing
   them at rest is backlog, not a hole.
-- **Portal tokens never expire or rotate.** A durable capability in a
-  mailbox is the UX trade-off that makes the portal usable; revocation
-  today means removing the person.
+- **Portal tokens never expire on their own.** A durable capability in a
+  mailbox is the UX trade-off that makes the portal usable; killing a
+  leaked one is an explicit operator act — rotate it (panel button,
+  `person rotate-portal`), and action links revoke the same way
+  (`event revoke-links`).
 - **The ICS feed is unauthenticated** and lists all events — it is the
   passive baseline for calendar apps, and its URL must be treated like
   a token. Short-notice cancellations never rely on it.

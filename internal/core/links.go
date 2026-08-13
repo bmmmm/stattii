@@ -56,6 +56,45 @@ func (s *Service) linksLocked(eventID, personID string) (confirmTok, cancelTok s
 	return confirmTok, cancelTok
 }
 
+// RevokeLinks revokes every active action link in scope: both ids →
+// that pair, event only → the whole event, person only → that person
+// across all events. At least one id is required — "revoke everything"
+// must not be reachable by a blank form. Regenerating afterwards mints
+// fresh tokens, because linksLocked skips revoked rows.
+func (s *Service) RevokeLinks(eventID, personID string) (int, error) {
+	if eventID == "" && personID == "" {
+		return 0, errors.New("event_id or person_id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if eventID != "" && s.state.Event(eventID) == nil {
+		return 0, ErrNotFound
+	}
+	if personID != "" && s.state.Person(personID) == nil {
+		return 0, ErrNotFound
+	}
+	n := 0
+	for i := range s.state.Links {
+		l := &s.state.Links[i]
+		if !l.RevokedAt.IsZero() {
+			continue
+		}
+		if eventID != "" && l.EventID != eventID {
+			continue
+		}
+		if personID != "" && l.PersonID != personID {
+			continue
+		}
+		l.RevokedAt = s.now()
+		n++
+	}
+	if n > 0 {
+		s.auditLocked("links.revoked", map[string]any{"event_id": eventID, "person_id": personID, "count": n})
+		s.saveLocked()
+	}
+	return n, nil
+}
+
 func (s *Service) actionURL(token string) string { return s.cfg.BaseURL + "/a/" + token }
 func (s *Service) portalURL(token string) string { return s.cfg.BaseURL + "/p/" + token }
 
