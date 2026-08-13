@@ -27,17 +27,23 @@ type AuditEntry struct {
 	Data json.RawMessage `json:"data"`
 }
 
-// JSONStore keeps state.json (atomic rewrite) and audit.jsonl (append-only)
-// in one directory. Files are 0600 — they contain capability tokens.
+// JSONStore keeps state.json (atomic rewrite) and audit.jsonl (append-only,
+// size-rotated) in one directory. Files are 0600 — they contain capability
+// tokens.
 type JSONStore struct {
-	dir string
+	dir           string
+	maxAuditBytes int64
 }
+
+// defaultMaxAuditBytes bounds audit.jsonl before rotation — at ~200 bytes
+// per entry that is years of club-scale activity per generation.
+const defaultMaxAuditBytes = 10 << 20
 
 func NewJSONStore(dir string) (*JSONStore, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create data dir %s: %w", dir, err)
 	}
-	return &JSONStore{dir: dir}, nil
+	return &JSONStore{dir: dir, maxAuditBytes: defaultMaxAuditBytes}, nil
 }
 
 func (j *JSONStore) statePath() string { return filepath.Join(j.dir, "state.json") }
@@ -110,6 +116,14 @@ func (j *JSONStore) Audit(kind string, data any) error {
 	line, err := json.Marshal(AuditEntry{At: time.Now().UTC(), Kind: kind, Data: raw})
 	if err != nil {
 		return err
+	}
+	// Size-based rotation, one previous generation kept (audit.jsonl.1).
+	// ReadAudit reads only the live file — the panel sees recent entries,
+	// the rotated file keeps the older half for forensics. A failed
+	// rename is not an error: the file just keeps growing until the next
+	// attempt, which loses nothing.
+	if st, err := os.Stat(j.auditPath()); err == nil && st.Size() >= j.maxAuditBytes {
+		_ = os.Rename(j.auditPath(), j.auditPath()+".1")
 	}
 	f, err := os.OpenFile(j.auditPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {

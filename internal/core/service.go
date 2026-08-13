@@ -73,6 +73,11 @@ type Service struct {
 	now          func() time.Time
 	logf         func(format string, args ...any)
 	calendarHTTP *http.Client // test override for calendar fetches
+	// Store health, one bit per file. While either is set, acknowledged
+	// mutations are not durable (or the audit trail has holes) — surfaced
+	// via PersistHealthy → /healthz.
+	saveFailed  bool
+	auditFailed bool
 }
 
 func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {
@@ -115,14 +120,43 @@ var (
 
 func (s *Service) saveLocked() {
 	if err := s.store.Save(s.state); err != nil {
-		s.logf("stattii: persist failed: %v", err)
+		s.noteStoreFailureLocked(&s.saveFailed, "state persist failed", err)
+		return
 	}
+	s.saveFailed = false
 }
 
 func (s *Service) auditLocked(kind string, data any) {
 	if err := s.store.Audit(kind, data); err != nil {
-		s.logf("stattii: audit write failed: %v", err)
+		s.noteStoreFailureLocked(&s.auditFailed, "audit write failed", err)
+		return
 	}
+	s.auditFailed = false
+}
+
+// noteStoreFailureLocked records a store failure and pages the admin once
+// per failure episode (the healthy→failed transition). Each file has its
+// own bit so a healthy state save cannot mask a broken audit trail. The
+// escalation item lives only in memory while the disk is broken — still
+// the best available signal: the outbox sends from memory, so the admin
+// learns while the process is alive instead of never.
+func (s *Service) noteStoreFailureLocked(bit *bool, what string, err error) {
+	s.logf("stattii: %s: %v", what, err)
+	wasHealthy := !s.saveFailed && !s.auditFailed
+	*bit = true
+	if wasHealthy {
+		s.notifyAdminLocked("STORE FAILURE: "+what,
+			fmt.Sprintf("%s: %v\n\nMutations continue in memory but are NOT durable. "+
+				"Fix the data dir now; /healthz reports failure until a write succeeds.", what, err))
+	}
+}
+
+// PersistHealthy reports whether the last store writes succeeded — false
+// means acknowledged mutations are not durable. Surfaced via /healthz.
+func (s *Service) PersistHealthy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.saveFailed && !s.auditFailed
 }
 
 // ---- events ---------------------------------------------------------------

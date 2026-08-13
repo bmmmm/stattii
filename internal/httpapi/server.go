@@ -92,7 +92,7 @@ func (s *Server) PublicHandler() http.Handler {
 	mux.HandleFunc("GET /i/{token}", s.public(s.invitePage))
 	mux.HandleFunc("POST /i/{token}", s.public(s.inviteRSVP))
 	mux.HandleFunc("GET /feed.ics", s.public(s.feed))
-	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("GET /healthz", s.healthz)
 	return mux
 }
 
@@ -140,11 +140,19 @@ func (s *Server) AdminHandler() http.Handler {
 		mux.HandleFunc(pattern, s.auth(h))
 	}
 	s.registerAdminUI(mux)
-	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("GET /healthz", s.healthz)
 	return mux
 }
 
-func healthz(w http.ResponseWriter, _ *http.Request) {
+// healthz says "ok" only while the store persists: a service that keeps
+// acknowledging mutations it cannot write is exactly what a health probe
+// must scream about (issue #8) — monitoring and the deploy verify both
+// key on this body.
+func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
+	if !s.svc.PersistHealthy() {
+		http.Error(w, "store failure: mutations are not durable", http.StatusInternalServerError)
+		return
+	}
 	w.Write([]byte("ok\n"))
 }
 
