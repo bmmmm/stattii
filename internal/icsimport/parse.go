@@ -26,6 +26,7 @@ type Event struct {
 	AllDay       bool
 	RRule        string
 	ExDates      []time.Time
+	RDates       []time.Time
 	RecurrenceID time.Time
 	Status       string
 	Sequence     int
@@ -113,6 +114,23 @@ func Parse(raw []byte) ([]Event, []Skipped) {
 					break
 				}
 				cur.ExDates = append(cur.ExDates, t)
+			}
+		case "RDATE":
+			// RDATE adds single date-times to the recurrence set.
+			// VALUE=PERIOD (start/end pairs) does not appear in the feeds
+			// we import from; refusing it loudly beats mis-parsing it
+			// silently (issue #11: silent gaps are the locked-door bug).
+			if strings.EqualFold(params["VALUE"], "PERIOD") {
+				curErr = "RDATE: PERIOD values are not supported"
+				continue
+			}
+			for _, v := range strings.Split(value, ",") {
+				t, _, err := parseICSTime(strings.TrimSpace(v), params)
+				if err != nil {
+					curErr = "RDATE: " + err.Error()
+					break
+				}
+				cur.RDates = append(cur.RDates, t)
 			}
 		}
 	}

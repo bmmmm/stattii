@@ -123,6 +123,7 @@ func Expand(events []Event, from, to time.Time) ([]Occurrence, []Skipped) {
 			continue
 		}
 		duration := e.End.Sub(e.Start)
+		b.nextEvent()
 		var starts []time.Time
 		if e.RRule == "" {
 			starts = []time.Time{e.Start}
@@ -131,11 +132,36 @@ func Expand(events []Event, from, to time.Time) ([]Occurrence, []Skipped) {
 			if t, ok := firstOverride[e.UID]; ok && t.Before(lower) {
 				lower = t
 			}
-			b.nextEvent()
 			var err error
 			starts, err = expandRule(e, b, lower, to)
 			if err != nil {
 				skipped = append(skipped, Skipped{UID: e.UID, Summary: e.Summary, Reason: err.Error()})
+				continue
+			}
+		}
+		// RDATE adds occurrences on top of DTSTART/RRULE. Dedup by second
+		// (iCalendar carries no sub-second precision — same reasoning as
+		// exdateSet); the EXDATE filter below applies to RDATEs too, and
+		// out-of-window RDATEs fall to the window check like any start.
+		if len(e.RDates) > 0 {
+			have := make(map[int64]bool, len(starts))
+			for _, st := range starts {
+				have[st.Unix()] = true
+			}
+			budgetOK := true
+			for _, rd := range e.RDates {
+				if !b.spend() {
+					budgetOK = false
+					break
+				}
+				if have[rd.Unix()] {
+					continue
+				}
+				have[rd.Unix()] = true
+				starts = append(starts, rd)
+			}
+			if !budgetOK {
+				skipped = append(skipped, Skipped{UID: e.UID, Summary: e.Summary, Reason: errBudget.Error()})
 				continue
 			}
 		}
