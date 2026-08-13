@@ -62,8 +62,9 @@ export GOCACHE="$HOME/.cache/claudii/go-build" GOMODCACHE="$HOME/.cache/claudii/
        GOPROXY=direct GOSUMDB=off PATH="/opt/homebrew/bin:$PATH"
 ```
 
-`internal/channel` tests bind real `httptest` listeners — inside the Claude
-sandbox they may need a bypass; CI has no sandbox and is fine.
+Some tests bind real listeners (`internal/channel`, `internal/core`'s
+import fetch, root `cmd_serve`) — inside the Claude sandbox they fail with
+"operation not permitted" and need a bypass; CI has no sandbox and is fine.
 
 ## Conventions
 
