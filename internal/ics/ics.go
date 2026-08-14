@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bmmmm/stattii/internal/core"
 )
@@ -70,9 +71,11 @@ func status(s core.EventStatus) string {
 // escape per RFC 5545: backslash, semicolon, comma, newline. A lone CR is
 // covered too — titles are foreign-controlled (portal create, feed import)
 // and a raw CR would let them inject property lines into the feed.
+// Package-level: NewReplacer compiles a trie, once is enough.
+var escaper = strings.NewReplacer(`\`, `\\`, ";", `\;`, ",", `\,`, "\r\n", `\n`, "\r", `\n`, "\n", `\n`)
+
 func escape(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, ";", `\;`, ",", `\,`, "\r\n", `\n`, "\r", `\n`, "\n", `\n`)
-	return r.Replace(s)
+	return escaper.Replace(s)
 }
 
 // line writes a content line folded at 74 octets (RFC 5545 limit is 75),
@@ -80,7 +83,7 @@ func escape(s string) string {
 func line(b *strings.Builder, s string) {
 	octets := 0
 	for _, r := range s {
-		n := len(string(r))
+		n := utf8.RuneLen(r)
 		if octets+n > 74 {
 			b.WriteString("\r\n ")
 			octets = 1 // the leading space counts

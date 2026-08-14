@@ -10,8 +10,8 @@ package icsimport
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,7 +29,6 @@ type Event struct {
 	RDates       []time.Time
 	RecurrenceID time.Time
 	Status       string
-	Sequence     int
 }
 
 // Parse extracts the VEVENTs from raw iCalendar data. Events whose
@@ -80,8 +79,6 @@ func Parse(raw []byte) ([]Event, []Skipped) {
 			cur.Location = unescapeText(value)
 		case "STATUS":
 			cur.Status = strings.ToUpper(value)
-		case "SEQUENCE":
-			cur.Sequence, _ = strconv.Atoi(value)
 		case "RRULE":
 			cur.RRule = value
 		case "DTSTART":
@@ -190,10 +187,14 @@ func splitProp(line string) (name string, params map[string]string, value string
 	}
 	parts := strings.Split(head, ";")
 	name = strings.ToUpper(parts[0])
-	params = map[string]string{}
-	for _, p := range parts[1:] {
-		if k, v, ok := strings.Cut(p, "="); ok {
-			params[strings.ToUpper(k)] = strings.Trim(v, `"`)
+	// Most properties carry no params; a nil map reads fine and skips
+	// an allocation per line.
+	if len(parts) > 1 {
+		params = map[string]string{}
+		for _, p := range parts[1:] {
+			if k, v, ok := strings.Cut(p, "="); ok {
+				params[strings.ToUpper(k)] = strings.Trim(v, `"`)
+			}
 		}
 	}
 	return name, params, value
@@ -217,6 +218,25 @@ func unescapeText(s string) string {
 	return b.String()
 }
 
+// tzCache memoizes time.LoadLocation, which re-reads the zoneinfo
+// database on every call (~26µs). A feed repeats the same few TZIDs
+// across every DTSTART/DTEND/EXDATE value — and EXDATE lists in a
+// 5 MB feed are foreign data driving seconds of CPU without the
+// cache. Successes only, so it stays bounded by real zone names.
+var tzCache sync.Map // TZID -> *time.Location
+
+func loadLocation(tzid string) (*time.Location, error) {
+	if v, ok := tzCache.Load(tzid); ok {
+		return v.(*time.Location), nil
+	}
+	loc, err := time.LoadLocation(tzid)
+	if err != nil {
+		return nil, err
+	}
+	tzCache.Store(tzid, loc)
+	return loc, nil
+}
+
 // parseICSTime handles the three iCalendar time shapes: date-only
 // (all-day), UTC ("...Z") and local time with an optional TZID.
 func parseICSTime(value string, params map[string]string) (t time.Time, allDay bool, err error) {
@@ -230,7 +250,7 @@ func parseICSTime(value string, params map[string]string) (t time.Time, allDay b
 	}
 	loc := time.Local
 	if tzid := params["TZID"]; tzid != "" {
-		loc, err = time.LoadLocation(tzid)
+		loc, err = loadLocation(tzid)
 		if err != nil {
 			return time.Time{}, false, fmt.Errorf("unknown TZID %q", tzid)
 		}

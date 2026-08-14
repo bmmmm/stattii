@@ -253,8 +253,9 @@ func (s *Service) RSVP(token string, in RSVPInput) (Guest, error) {
 	if e.Status == StatusCancelled {
 		return Guest{}, ErrCancelled
 	}
+	guests := s.state.GuestsFor(e.ID)
 	var g *Guest
-	for _, cand := range s.state.GuestsFor(e.ID) {
+	for _, cand := range guests {
 		if strings.EqualFold(cand.Name, in.Name) {
 			g = cand
 			break
@@ -262,7 +263,7 @@ func (s *Service) RSVP(token string, in RSVPInput) (Guest, error) {
 	}
 	isNew := g == nil
 	if isNew {
-		if len(s.state.GuestsFor(e.ID)) >= MaxGuestsPerEvent {
+		if len(guests) >= MaxGuestsPerEvent {
 			return Guest{}, errors.New("the guest list is full — please contact the host directly")
 		}
 		s.state.Guests = append(s.state.Guests, Guest{

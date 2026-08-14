@@ -366,7 +366,7 @@ func (s *Server) inviteRSVP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) feed(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
-	w.Write([]byte(ics.Feed(s.calName, s.svc.Events(), time.Now())))
+	io.WriteString(w, ics.Feed(s.calName, s.svc.Events(), time.Now()))
 }
 
 // ---- admin API ------------------------------------------------------------
@@ -655,20 +655,29 @@ func formTimes(r *http.Request) (start, end time.Time, err error) {
 	return start, end, nil
 }
 
+// httpStatusFor maps the service's sentinel errors to HTTP statuses —
+// one mapping shared by the JSON API and the admin error page, so the
+// two surfaces cannot drift apart. The public error page (renderError)
+// stays separate: it picks recipient-facing wording per case, not just
+// a status.
+func httpStatusFor(err error) int {
+	switch {
+	case errors.Is(err, core.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, core.ErrGone):
+		return http.StatusGone
+	case errors.Is(err, core.ErrCancelled):
+		return http.StatusConflict
+	case errors.Is(err, core.ErrForbidden):
+		return http.StatusForbidden
+	default:
+		return http.StatusBadRequest
+	}
+}
+
 func respond(w http.ResponseWriter, data any, err error, okStatus int) {
 	if err != nil {
-		switch {
-		case errors.Is(err, core.ErrNotFound):
-			jsonError(w, http.StatusNotFound, err.Error())
-		case errors.Is(err, core.ErrGone):
-			jsonError(w, http.StatusGone, err.Error())
-		case errors.Is(err, core.ErrCancelled):
-			jsonError(w, http.StatusConflict, err.Error())
-		case errors.Is(err, core.ErrForbidden):
-			jsonError(w, http.StatusForbidden, err.Error())
-		default:
-			jsonError(w, http.StatusBadRequest, err.Error())
-		}
+		jsonError(w, httpStatusFor(err), err.Error())
 		return
 	}
 	writeJSON(w, okStatus, data)

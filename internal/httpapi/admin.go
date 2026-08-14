@@ -189,7 +189,14 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 			d.Proposals = append(d.Proposals, p)
 		}
 	}
-	d.Pending = s.svc.OutboxItems(true)
+	// One outbox walk serves both the pending list (state order, before
+	// the sort) and the recent feed below.
+	items := s.svc.OutboxItems(false)
+	for _, o := range items {
+		if !o.Delivered() {
+			d.Pending = append(d.Pending, o)
+		}
+	}
 
 	// Recent messages — the tracking feed: newest first, names not ids.
 	name := map[string]string{}
@@ -200,7 +207,6 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	for _, oe := range d.Ov.Events {
 		title[oe.Event.ID] = oe.Event.Title
 	}
-	items := s.svc.OutboxItems(false)
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 	for _, o := range items {
 		if len(d.Recent) == 10 {
@@ -287,16 +293,7 @@ func (s *Server) adminAct(w http.ResponseWriter, r *http.Request, err error) {
 // renderAdminError is the operator-voiced error page — the public one
 // gives link-holder advice that is useless behind /admin.
 func (s *Server) renderAdminError(w http.ResponseWriter, err error) {
-	status := http.StatusBadRequest
-	switch {
-	case errors.Is(err, core.ErrNotFound):
-		status = http.StatusNotFound
-	case errors.Is(err, core.ErrGone):
-		status = http.StatusGone
-	case errors.Is(err, core.ErrCancelled):
-		status = http.StatusConflict
-	}
-	renderTo(w, adminTmpl, "admin_error", status, err.Error())
+	renderTo(w, adminTmpl, "admin_error", httpStatusFor(err), err.Error())
 }
 
 func (s *Server) adminEventConfirm(w http.ResponseWriter, r *http.Request) {
@@ -399,16 +396,18 @@ type adminPerson struct {
 func (s *Server) adminPeople(w http.ResponseWriter, r *http.Request) {
 	var d adminPeopleData
 	items := s.svc.OutboxItems(false)
+	// Newest item per person in one pass; ties keep the earlier item,
+	// like the per-person scan this replaces.
+	latest := make(map[string]*core.OutboxItem, len(items))
+	for i := range items {
+		if cur := latest[items[i].PersonID]; cur == nil || items[i].CreatedAt.After(cur.CreatedAt) {
+			latest[items[i].PersonID] = &items[i]
+		}
+	}
 	for _, p := range s.svc.People() {
 		u, _ := s.svc.PersonPortalURL(p.ID)
 		ap := adminPerson{Person: p, PortalURL: u}
-		var last *core.OutboxItem
-		for i := range items {
-			if items[i].PersonID == p.ID && (last == nil || items[i].CreatedAt.After(last.CreatedAt)) {
-				last = &items[i]
-			}
-		}
-		if last != nil {
+		if last := latest[p.ID]; last != nil {
 			switch {
 			case last.Delivered():
 				ap.LastMsg = fmt.Sprintf("last message: %s via %s, delivered %s",

@@ -70,7 +70,6 @@ type Occurrence struct {
 	Location string
 	Start    time.Time
 	End      time.Time
-	AllDay   bool
 }
 
 // Skipped names an event or series the importer could not (or must
@@ -173,13 +172,13 @@ func Expand(events []Event, from, to time.Time) ([]Occurrence, []Skipped) {
 			occ := Occurrence{
 				Key: occurrenceKey(e.UID, st), UID: e.UID,
 				Summary: e.Summary, Location: e.Location,
-				Start: st, End: st.Add(duration), AllDay: e.AllDay,
+				Start: st, End: st.Add(duration),
 			}
 			if ov, ok := overrides[occ.Key]; ok {
 				if ov.Status == "CANCELLED" {
 					continue
 				}
-				occ.Summary, occ.Location, occ.AllDay = ov.Summary, ov.Location, ov.AllDay
+				occ.Summary, occ.Location = ov.Summary, ov.Location
 				occ.Start, occ.End = ov.Start, ov.End
 				if occ.End.IsZero() {
 					occ.End = occ.Start.Add(duration)

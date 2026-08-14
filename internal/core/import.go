@@ -129,10 +129,9 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 				Title: title, Location: o.Location, StartsAt: o.Start, EndsAt: o.End,
 				SourceUID: o.UID, SourceKey: o.Key,
 			}, "import")
-			ev := s.state.Event(ne.ID)
 			for _, sa := range s.state.SeriesAssignments {
 				if sa.SourceUID == o.UID && s.state.Person(sa.PersonID) != nil {
-					s.assignLocked(ev.ID, sa.PersonID, sa.Role)
+					s.assignLocked(ne.ID, sa.PersonID, sa.Role)
 				}
 			}
 			rep.Created++

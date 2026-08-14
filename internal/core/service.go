@@ -373,10 +373,11 @@ func (s *Service) fanOutLocked(e *Event, purpose, subject, body string) {
 	// flood attempt), not two recipients.
 	seen := map[string]bool{}
 	for _, g := range s.state.GuestsFor(e.ID) {
-		if g.Email == "" || seen[strings.ToLower(g.Email)] {
+		key := strings.ToLower(g.Email)
+		if g.Email == "" || seen[key] {
 			continue
 		}
-		seen[strings.ToLower(g.Email)] = true
+		seen[key] = true
 		s.enqueueLocked(OutboxItem{
 			EventID: e.ID, GuestID: g.ID, Purpose: purpose,
 			Kind: "email", To: g.Email, Subject: subject, Body: body,

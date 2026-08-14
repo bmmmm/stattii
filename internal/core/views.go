@@ -126,21 +126,35 @@ func (s *Service) Overview() Overview {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ov := Overview{People: len(s.state.People)}
+	// Index once instead of rescanning per event — the nested scans were
+	// quadratic in the event count. Latest-response folding keeps the
+	// original tie-break: strictly-later At wins, ties keep the earlier.
+	people := make(map[string]*Person, len(s.state.People))
+	for i := range s.state.People {
+		people[s.state.People[i].ID] = &s.state.People[i]
+	}
+	byEvent := make(map[string][]Assignment, len(s.state.Events))
+	for _, a := range s.state.Assignments {
+		byEvent[a.EventID] = append(byEvent[a.EventID], a)
+	}
+	type respKey struct{ event, person string }
+	latest := make(map[respKey]Response, len(s.state.Responses))
+	for _, r := range s.state.Responses {
+		k := respKey{r.EventID, r.PersonID}
+		if r.At.After(latest[k].At) {
+			latest[k] = r
+		}
+	}
 	for _, e := range s.state.Events {
 		oe := OverviewEvent{Event: e}
-		for _, a := range s.state.Assignments {
-			if a.EventID != e.ID {
-				continue
-			}
-			p := s.state.Person(a.PersonID)
+		for _, a := range byEvent[e.ID] {
+			p := people[a.PersonID]
 			if p == nil {
 				continue
 			}
 			oa := OverviewAssignee{PersonID: p.ID, Name: p.Name, Role: a.Role, Trust: p.Trust}
-			for _, r := range s.state.Responses {
-				if r.EventID == e.ID && r.PersonID == p.ID && r.At.After(oa.At) {
-					oa.Action, oa.Via, oa.At = r.Action, r.Via, r.At
-				}
+			if r, ok := latest[respKey{e.ID, p.ID}]; ok {
+				oa.Action, oa.Via, oa.At = r.Action, r.Via, r.At
 			}
 			oe.Assignees = append(oe.Assignees, oa)
 		}
