@@ -77,7 +77,10 @@ stattii event propagation <id>   # {total, delivered, pending, failed, complete}
 Items undelivered after `--escalate-after` (default 10 min) page the admin
 (`STATTII_ADMIN_NOTIFY=telegram:<chat-id>` or `email:<addr>`); inspect and
 re-arm them with `stattii outbox list --pending` / `stattii outbox retry
-<id>`. A wrong cancellation is withdrawn with `stattii event reinstate <id>`
+<id>`. Delivered items whose event is more than `--outbox-retention`
+(default 90 days) in the past are pruned from the state file — the
+delivery proof stays in `audit.jsonl`, and undelivered items are never
+pruned. A wrong cancellation is withdrawn with `stattii event reinstate <id>`
 — that too is a propagation transaction and restarts the confirmation cycle.
 
 If nobody answers the reminder at all, `deadline.passed` fires (webhook +
@@ -136,7 +139,7 @@ environment via `smtp_pass_env` / `token_env` — your choice.
 
 Flags on `serve`: `--config`, `--listen`, `--admin-listen`, `--data`,
 `--base-url`, `--cal-name`, `--reminder-lead`, `--deadline-lead`,
-`--escalate-after`, `--tick`, `--trusted-proxies`.
+`--escalate-after`, `--outbox-retention`, `--tick`, `--trusted-proxies`.
 
 Environment fallbacks (all optional once `config.json` exists):
 

@@ -40,16 +40,21 @@ func (s *Service) enqueueToPersonLocked(p *Person, item OutboxItem) []string {
 	return ids
 }
 
-// outboxState classifies an item for summaries — the single definition of
-// "failed" (retries exhausted) shared by Propagation and Overview.
-func (s *Service) outboxState(o OutboxItem) string {
+// OutboxState classifies an item — the single definition shared by the
+// summaries (Propagation and Overview fold retrying+queued into
+// "pending") and every admin surface, so a red row and the "failed"
+// counter can never disagree: "failed" means retries exhausted, a
+// retrying item is in transit, not lost.
+func (s *Service) OutboxState(o OutboxItem) string {
 	switch {
 	case o.Delivered():
 		return "delivered"
 	case o.Attempts >= s.cfg.MaxAttempts:
 		return "failed"
+	case o.Attempts > 0:
+		return "retrying"
 	default:
-		return "pending"
+		return "queued"
 	}
 }
 
@@ -127,7 +132,7 @@ func (s *Service) Propagation(eventID string) (PropagationStatus, error) {
 		}
 		ps.Total++
 		ps.Items = append(ps.Items, o)
-		switch s.outboxState(o) {
+		switch s.OutboxState(o) {
 		case "delivered":
 			ps.Delivered++
 		case "failed":
@@ -162,9 +167,48 @@ func (s *Service) Tick(now time.Time) {
 	if s.tickOutboxLocked(now) {
 		changed = true
 	}
+	if s.pruneOutboxLocked(now) {
+		changed = true
+	}
 	if changed {
 		s.saveLocked()
 	}
+}
+
+// pruneOutboxLocked drops delivered items whose story is over: delivery
+// AND the event (if it still exists) lie more than OutboxRetention in
+// the past. Items for a live or recent event stay — the panel's
+// per-guest delivery markers read them. Undelivered items are never
+// pruned: an unproven delivery is the alarm this product exists for.
+// Proof of pruned deliveries survives in audit.jsonl (delivery.ok);
+// this only keeps state.json, re-marshalled on every mutation, bounded.
+func (s *Service) pruneOutboxLocked(now time.Time) bool {
+	cutoff := now.Add(-s.cfg.OutboxRetention)
+	kept := s.state.Outbox[:0]
+	pruned := 0
+	for _, o := range s.state.Outbox {
+		if !o.Delivered() || o.DeliveredAt.After(cutoff) {
+			kept = append(kept, o)
+			continue
+		}
+		if e := s.state.Event(o.EventID); e != nil {
+			end := e.EndsAt
+			if end.IsZero() {
+				end = e.StartsAt
+			}
+			if end.After(cutoff) {
+				kept = append(kept, o)
+				continue
+			}
+		}
+		pruned++
+	}
+	if pruned == 0 {
+		return false
+	}
+	s.state.Outbox = kept
+	s.auditLocked("outbox.pruned", map[string]any{"count": pruned, "cutoff": cutoff})
+	return true
 }
 
 func (s *Service) tickRemindersLocked(now time.Time) bool {

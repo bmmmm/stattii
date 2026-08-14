@@ -36,6 +36,11 @@
   // Undelivered messages page the admin after this long.
   "escalate_after": "10m",
 
+  // Delivered outbox items whose event is this long past are pruned
+  // from state.json (delivery proof stays in audit.jsonl). Undelivered
+  // items are never pruned. Default 2160h = 90 days.
+  "outbox_retention": "2160h",
+
   // Scheduler interval.
   "tick": "1m",
 

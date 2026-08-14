@@ -330,7 +330,7 @@ func TestInviteShowsGuestDeliveryState(t *testing.T) {
 		t.Fatal(err)
 	}
 	st, _ := svc.Invite(e.ID)
-	if st.Guests[0].LastNotice != "cancellation" || st.Guests[0].NoticeState != "pending" {
+	if st.Guests[0].LastNotice != "cancellation" || st.Guests[0].NoticeState != "queued" {
 		t.Fatalf("before tick: %+v", st.Guests[0])
 	}
 	if st.Guests[1].NoticeState != "" {

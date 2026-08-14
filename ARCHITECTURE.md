@@ -68,7 +68,10 @@ The "tables" are slices linked by ids: events, people, assignments,
 links, responses, proposals, broadcasts, webhooks, outbox, series
 assignments, invites, guests. Every lookup is a linear scan. The `Store`
 interface is the exit hatch if volume ever demands SQLite; a few hundred
-events a year never will.
+events a year never will. The one slice that would grow without bound —
+the outbox — is pruned on tick: delivered items whose event is more
+than `outbox_retention` (default 90 days) past are dropped, their proof
+already being in `audit.jsonl`. Undelivered items are never pruned.
 
 ## Identity: token possession, three tiers
 

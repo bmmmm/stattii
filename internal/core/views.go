@@ -164,7 +164,7 @@ func (s *Service) Overview() Overview {
 		return ov.Events[i].Event.StartsAt.Before(ov.Events[j].Event.StartsAt)
 	})
 	for _, o := range s.state.Outbox {
-		switch s.outboxState(o) {
+		switch s.OutboxState(o) {
 		case "delivered":
 			ov.Outbox.Delivered++
 		case "failed":

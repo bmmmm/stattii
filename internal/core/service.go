@@ -34,7 +34,11 @@ type Config struct {
 	RetryDelay    time.Duration // base outbox retry delay (exponential backoff)
 	MaxAttempts   int           // outbox attempts before an item counts as failed
 	EscalateAfter time.Duration // undelivered for this long => notify admin
-	AdminNotify   *Address      // where escalations and proposals go (optional)
+	// OutboxRetention bounds state.json: delivered items whose event is
+	// this long past get pruned (proof stays in audit.jsonl). Undelivered
+	// items are never pruned.
+	OutboxRetention time.Duration
+	AdminNotify     *Address // where escalations and proposals go (optional)
 	// Calendar import (optional): the foreign ICS feed events come from,
 	// and how far ahead occurrences are materialised.
 	CalendarSource string
@@ -56,6 +60,9 @@ func (c *Config) fill() {
 	}
 	if c.EscalateAfter == 0 {
 		c.EscalateAfter = 10 * time.Minute
+	}
+	if c.OutboxRetention == 0 {
+		c.OutboxRetention = 90 * 24 * time.Hour
 	}
 	if c.CalendarWindow == 0 {
 		c.CalendarWindow = 60 * 24 * time.Hour

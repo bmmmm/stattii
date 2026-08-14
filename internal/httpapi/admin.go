@@ -116,7 +116,7 @@ type adminTimelineEntry struct {
 // timelineFor merges one person's outbox items and responses for one
 // event into that story. Everything shown here really happened — we
 // track only our own deliveries and answer clicks, no pixels.
-func timelineFor(eventID, personID string, outbox []core.OutboxItem, responses []core.Response) []adminTimelineEntry {
+func timelineFor(eventID, personID string, outbox []core.OutboxItem, responses []core.Response, state func(core.OutboxItem) string) []adminTimelineEntry {
 	var es []adminTimelineEntry
 	for _, o := range outbox {
 		if o.EventID != eventID || o.PersonID != personID {
@@ -124,13 +124,16 @@ func timelineFor(eventID, personID string, outbox []core.OutboxItem, responses [
 		}
 		es = append(es, adminTimelineEntry{At: o.CreatedAt, Icon: "→", Muted: true,
 			Text: fmt.Sprintf("%s sent via %s to %s", o.Purpose, o.Kind, o.To)})
-		switch {
-		case o.Delivered():
+		switch state(o) {
+		case "delivered":
 			es = append(es, adminTimelineEntry{At: o.DeliveredAt, Icon: "✓", Muted: true,
 				Text: fmt.Sprintf("delivered (attempt %d)", o.Attempts)})
-		case o.Attempts > 0:
+		case "failed":
 			es = append(es, adminTimelineEntry{At: o.NextAttempt, Icon: "!", Bad: true,
 				Text: fmt.Sprintf("undelivered after %d attempt(s): %s", o.Attempts, o.LastError)})
+		case "retrying":
+			es = append(es, adminTimelineEntry{At: o.NextAttempt, Icon: "…",
+				Text: fmt.Sprintf("retrying (attempt %d): %s", o.Attempts, o.LastError)})
 		}
 		if !o.EscalatedAt.IsZero() {
 			es = append(es, adminTimelineEntry{At: o.EscalatedAt, Icon: "!", Bad: true, Text: "escalated to admin"})
@@ -157,12 +160,20 @@ type adminRecentMsg struct {
 	Bad  bool
 }
 
+// adminPendingItem carries the item's classified state so the template
+// colours by the same definition the footer counts by (core.OutboxState)
+// — a red row and "0 failed" must never appear together.
+type adminPendingItem struct {
+	core.OutboxItem
+	State string // "failed" | "retrying" | "queued"
+}
+
 type adminOverviewData struct {
 	Ov         core.Overview
 	Hidden     int // past events not shown (use ?all=1)
 	All        bool
-	Proposals  []core.Proposal   // open only
-	Pending    []core.OutboxItem // undelivered
+	Proposals  []core.Proposal    // open only
+	Pending    []adminPendingItem // undelivered
 	People     []core.Person
 	Recent     []adminRecentMsg // last messages, newest first
 	Calendar   bool             // a source feed is configured
@@ -194,7 +205,7 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	items := s.svc.OutboxItems(false)
 	for _, o := range items {
 		if !o.Delivered() {
-			d.Pending = append(d.Pending, o)
+			d.Pending = append(d.Pending, adminPendingItem{OutboxItem: o, State: s.svc.OutboxState(o)})
 		}
 	}
 
@@ -221,12 +232,14 @@ func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 			what += " · " + t
 		}
 		m := adminRecentMsg{At: o.CreatedAt}
-		switch {
-		case o.Delivered():
+		switch s.svc.OutboxState(o) {
+		case "delivered":
 			m.Text = fmt.Sprintf("%s → %s (%s): delivered", what, who, o.Kind)
-		case o.Attempts > 0:
+		case "failed":
 			m.Text = fmt.Sprintf("%s → %s (%s): UNDELIVERED after %d attempt(s)", what, who, o.Kind, o.Attempts)
 			m.Bad = true
+		case "retrying":
+			m.Text = fmt.Sprintf("%s → %s (%s): retrying (attempt %d)", what, who, o.Kind, o.Attempts)
 		default:
 			m.Text = fmt.Sprintf("%s → %s (%s): queued", what, who, o.Kind)
 		}
@@ -266,7 +279,7 @@ func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
 	outbox := s.svc.OutboxItems(false)
 	responses := s.svc.Responses(id)
 	for _, a := range found.Assignees {
-		d.Tracks = append(d.Tracks, adminTrack{A: a, Entries: timelineFor(id, a.PersonID, outbox, responses)})
+		d.Tracks = append(d.Tracks, adminTrack{A: a, Entries: timelineFor(id, a.PersonID, outbox, responses, s.svc.OutboxState)})
 	}
 	d.Propagation, _ = s.svc.Propagation(id)
 	// Read-only: the invite link is minted by the button below, never by
@@ -408,14 +421,17 @@ func (s *Server) adminPeople(w http.ResponseWriter, r *http.Request) {
 		u, _ := s.svc.PersonPortalURL(p.ID)
 		ap := adminPerson{Person: p, PortalURL: u}
 		if last := latest[p.ID]; last != nil {
-			switch {
-			case last.Delivered():
+			switch s.svc.OutboxState(*last) {
+			case "delivered":
 				ap.LastMsg = fmt.Sprintf("last message: %s via %s, delivered %s",
 					last.Purpose, last.Kind, last.DeliveredAt.Local().Format("02 Jan 15:04"))
-			case last.Attempts > 0:
+			case "failed":
 				ap.LastMsg = fmt.Sprintf("last message: %s via %s, UNDELIVERED (%d attempts)",
 					last.Purpose, last.Kind, last.Attempts)
 				ap.LastBad = true
+			case "retrying":
+				ap.LastMsg = fmt.Sprintf("last message: %s via %s, retrying (attempt %d)",
+					last.Purpose, last.Kind, last.Attempts)
 			default:
 				ap.LastMsg = fmt.Sprintf("last message: %s via %s, queued", last.Purpose, last.Kind)
 			}

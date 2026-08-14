@@ -63,7 +63,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
   <form method="post" action="/admin/proposals/{{.ID}}"><input type="hidden" name="decision" value="reject"><button class="no" type="submit">Reject</button></form></p>
 {{end}}
 {{range .Pending}}
-  <p class="bad">Undelivered {{.Purpose}} → {{.To}} ({{.Attempts}} attempts)
+  <p class="{{if eq .State "failed"}}bad{{else}}muted{{end}}">{{if eq .State "failed"}}UNDELIVERED{{else if eq .State "retrying"}}Retrying{{else}}Queued{{end}} {{.Purpose}} → {{.To}} ({{.Attempts}} attempts)
   <form method="post" action="/admin/outbox/{{.ID}}/retry"><button type="submit">Retry now</button></form></p>
 {{end}}
 </div>

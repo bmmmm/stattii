@@ -33,6 +33,7 @@ func cmdServe(args []string) {
 	reminderLead := fs.Duration("reminder-lead", 48*time.Hour, "how long before start the confirm/cancel ask goes out")
 	deadlineLead := fs.Duration("deadline-lead", 24*time.Hour, "unanswered this close to start fires deadline.passed")
 	escalateAfter := fs.Duration("escalate-after", 10*time.Minute, "undelivered outbox items page the admin after this long")
+	outboxRetention := fs.Duration("outbox-retention", 90*24*time.Hour, "delivered outbox items for events this long past are pruned (undelivered ones never)")
 	tickEvery := fs.Duration("tick", time.Minute, "scheduler interval")
 	trustedProxies := fs.String("trusted-proxies", "", "comma-separated CIDRs of reverse proxies; rate-limit client IP then comes from X-Forwarded-For")
 	fs.Parse(args)
@@ -80,6 +81,9 @@ func cmdServe(args []string) {
 	if !set["escalate-after"] && fc.EscalateAfter != "" {
 		*escalateAfter = parseDur("escalate_after", fc.EscalateAfter)
 	}
+	if !set["outbox-retention"] && fc.OutboxRetention != "" {
+		*outboxRetention = parseDur("outbox_retention", fc.OutboxRetention)
+	}
 	if !set["tick"] && fc.Tick != "" {
 		*tickEvery = parseDur("tick", fc.Tick)
 	}
@@ -111,12 +115,13 @@ func cmdServe(args []string) {
 	}
 
 	cfg := core.Config{
-		BaseURL:        *baseURL,
-		ReminderLead:   *reminderLead,
-		DeadlineLead:   *deadlineLead,
-		EscalateAfter:  *escalateAfter,
-		AdminNotify:    parseAdminNotify(firstOf(fc.AdminNotify, os.Getenv("STATTII_ADMIN_NOTIFY"))),
-		CalendarSource: firstOf(fc.CalendarSource, os.Getenv("STATTII_CALENDAR_SOURCE")),
+		BaseURL:         *baseURL,
+		ReminderLead:    *reminderLead,
+		DeadlineLead:    *deadlineLead,
+		EscalateAfter:   *escalateAfter,
+		OutboxRetention: *outboxRetention,
+		AdminNotify:     parseAdminNotify(firstOf(fc.AdminNotify, os.Getenv("STATTII_ADMIN_NOTIFY"))),
+		CalendarSource:  firstOf(fc.CalendarSource, os.Getenv("STATTII_CALENDAR_SOURCE")),
 	}
 	if fc.CalendarWindow != "" {
 		cfg.CalendarWindow = parseDur("calendar_window", fc.CalendarWindow)

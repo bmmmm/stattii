@@ -28,8 +28,12 @@ type fileConfig struct {
 	ReminderLead  string `json:"reminder_lead"`
 	DeadlineLead  string `json:"deadline_lead"`
 	EscalateAfter string `json:"escalate_after"`
-	Tick          string `json:"tick"`
-	AdminNotify   string `json:"admin_notify"` // "email:addr" | "telegram:chat-id"
+	// Delivered outbox items whose event is this long past are pruned
+	// from state.json (delivery proof stays in audit.jsonl). Undelivered
+	// items are never pruned.
+	OutboxRetention string `json:"outbox_retention"`
+	Tick            string `json:"tick"`
+	AdminNotify     string `json:"admin_notify"` // "email:addr" | "telegram:chat-id"
 	// Comma-separated CIDRs of reverse proxies in front of stattii. When the
 	// TCP peer matches, the rate-limit client IP comes from X-Forwarded-For
 	// (rightmost hop not in this list) — otherwise everyone behind the proxy

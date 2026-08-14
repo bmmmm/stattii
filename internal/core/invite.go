@@ -322,7 +322,7 @@ func (s *Service) Invite(eventID string) (InviteStatus, error) {
 		}
 		switch o.Purpose {
 		case "cancellation", "moved", "reinstated":
-			latest[o.GuestID] = notice{o.Purpose, s.outboxState(o)}
+			latest[o.GuestID] = notice{o.Purpose, s.OutboxState(o)}
 		}
 	}
 	for _, g := range s.state.GuestsFor(eventID) {
