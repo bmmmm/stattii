@@ -55,6 +55,11 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    cancellation mail: occurrences that disappear from the source are
    marked (`Event.VanishedAt`, sticky until they reappear; `import.vanished`
    audit, one admin page per fetch, panel attention), the operator decides.
+   The reachable assignees are asked once per disappearance
+   (`askVanishedLocked`, purpose `vanished`, audit `vanished.asked`) — the
+   one-shot reminder cannot carry that question after it has gone out;
+   guarded by `TestVanishedAsksTheResponsibleOnce` and
+   `TestSuspectFetchAsksNobody`.
    The deadline may still auto-cancel a vanished `if_unconfirmed=cancel`
    event — that is the dead-man-switch deciding, not the import.
    Time changes DO run the full move transaction (owner decision).

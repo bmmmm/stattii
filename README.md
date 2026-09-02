@@ -213,9 +213,12 @@ longer. The importer never overwrites a note you wrote on an event.
 Events that disappear from the feed are **never** auto-cancelled by the
 import: they are marked (visible in the panel's "Needs attention" until
 they are back in the feed or you cancel them there), the admin is paged
-once when they go missing, and the reminder to the responsible carries a
-note that the entry disappeared — they are the one person who knows
-whether that means "off". A vanished event with `if_unconfirmed=cancel`
+once when they go missing, and every reachable responsible is asked once
+per disappearance — with the same confirm/cancel links the reminder
+carries, because they are the one person who knows whether "gone from the
+feed" means "off". A reminder that has not gone out yet repeats the note;
+one that already went out cannot, which is why the ask is its own
+message. A vanished event with `if_unconfirmed=cancel`
 still auto-cancels at its *deadline* if nobody confirms it: the
 dead-man-switch decides, the import does not. A fetch that suddenly
 returns nothing is flagged suspect instead of marking everything vanished.

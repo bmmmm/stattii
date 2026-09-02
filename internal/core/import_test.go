@@ -649,3 +649,149 @@ func TestFetchEveryRequiresSource(t *testing.T) {
 		t.Fatal("a 10s polling interval must be refused")
 	}
 }
+
+// vanishedMessages are the "your occurrence disappeared" asks sent to one
+// person — the notice the one-shot reminder cannot carry.
+func vanishedMessages(fake *fakeNotifier, to string) []sent {
+	var out []sent
+	for _, m := range fake.byPurposeTo(to) {
+		if strings.Contains(m.Subject, "Disappeared from the calendar") {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// The responsible person hears about a disappearance exactly once: the
+// admin page is not the decision, she is. Repeating it on every fetch
+// would train people to ignore it.
+func TestVanishedAsksTheResponsibleOnce(t *testing.T) {
+	fake := &fakeNotifier{}
+	feed := &stubFeed{status: 200, body: icsWith("stays", "goes")}
+	svc, clock := newFeedService(t, fake, feed, 0)
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ana := mustPerson(t, svc, "ana", TrustRespond)
+	var goes Event
+	for _, e := range svc.Events() {
+		if e.SourceUID == "goes" {
+			goes = e
+		}
+	}
+	if err := svc.Assign(goes.ID, ana.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	feed.set(200, icsWith("stays"))
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(*clock)
+	asks := vanishedMessages(fake, "ana@test.local")
+	if len(asks) != 1 {
+		t.Fatalf("want exactly 1 ask on the disappearance, got %d: %+v", len(asks), asks)
+	}
+	// News alone is not enough — the ask carries her personal links, so
+	// the answer lands on the same decision the reminder would offer.
+	if !strings.Contains(asks[0].Body, "goes") ||
+		!strings.Contains(asks[0].Body, "NO, cancel it: http://test.local/a/") {
+		t.Fatalf("ask carries no decision links: %q", asks[0].Body)
+	}
+	if auditCount(t, svc, "vanished.asked") != 1 {
+		t.Fatal("the ask is not audited once")
+	}
+
+	// Still missing on the next fetch is the same fact, not news.
+	*clock = clock.Add(time.Hour)
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(*clock)
+	if got := vanishedMessages(fake, "ana@test.local"); len(got) != 1 {
+		t.Fatalf("a still-missing event asked again: %+v", got)
+	}
+
+	// Back and gone again is a new disappearance, so it asks again.
+	feed.set(200, icsWith("stays", "goes"))
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	feed.set(200, icsWith("stays"))
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(*clock)
+	if got := vanishedMessages(fake, "ana@test.local"); len(got) != 2 {
+		t.Fatalf("a second disappearance must ask again, got %d", len(got))
+	}
+}
+
+// A suspect fetch draws no conclusion, so it must not ask anyone either —
+// the empty-feed case is exactly where a false "is it off?" would start
+// real cancellations.
+func TestSuspectFetchAsksNobody(t *testing.T) {
+	fake := &fakeNotifier{}
+	feed := &stubFeed{status: 200, body: icsWith("a", "b")}
+	svc, clock := newFeedService(t, fake, feed, 0)
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ana := mustPerson(t, svc, "ana", TrustRespond)
+	for _, e := range svc.Events() {
+		if err := svc.Assign(e.ID, ana.ID, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	feed.set(200, "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+	rep, err := svc.FetchCalendar(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Suspect {
+		t.Fatalf("setup: empty feed must be suspect: %+v", rep)
+	}
+	svc.Tick(*clock)
+	if got := vanishedMessages(fake, "ana@test.local"); len(got) != 0 {
+		t.Fatalf("suspect fetch asked the responsible: %+v", got)
+	}
+}
+
+// Nobody reachable is the admin's problem, not a silent send: the ask is
+// skipped, the page from the same fetch still stands.
+func TestVanishedWithoutReachableAssigneeOnlyPages(t *testing.T) {
+	fake := &fakeNotifier{}
+	feed := &stubFeed{status: 200, body: icsWith("stays", "goes")}
+	svc, clock := newFeedService(t, fake, feed, 0)
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mute, err := svc.AddPerson("mute", TrustRespond, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range svc.Events() {
+		if e.SourceUID == "goes" {
+			if err := svc.Assign(e.ID, mute.ID, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	feed.set(200, icsWith("stays"))
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(*clock)
+	if auditCount(t, svc, "vanished.asked") != 0 {
+		t.Fatal("asked an unreachable assignee")
+	}
+	pages := adminMessages(fake, "Gone from the calendar")
+	if len(pages) != 1 {
+		t.Fatal("the admin page must stand on its own")
+	}
+	// The page must not imply someone was told — that is the whole point
+	// of paging in the first place.
+	if !strings.Contains(pages[0].Body, "NOBODY was asked") {
+		t.Fatalf("page hides that nobody was asked: %q", pages[0].Body)
+	}
+}

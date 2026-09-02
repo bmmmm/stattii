@@ -236,7 +236,7 @@ type OutboxItem struct {
 	// GuestID marks items addressed to a party guest — never reuse PersonID
 	// for that, the admin timeline joins on it and would mis-attribute.
 	GuestID     string            `json:"guest_id,omitempty"`
-	Purpose     string            `json:"purpose"` // "reminder" | "cancellation" | "moved" | "reinstated" | "proposal" | "escalation" | "webhook"
+	Purpose     string            `json:"purpose"` // "reminder" | "vanished" | "cancellation" | "moved" | "reinstated" | "proposal" | "escalation" | "webhook"
 	Kind        string            `json:"kind"`    // channel kind
 	To          string            `json:"to"`
 	Subject     string            `json:"subject"`

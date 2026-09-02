@@ -259,10 +259,19 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 			}
 			lines = append(lines, line)
 		}
+		// Ask first, page second: the page states how many people were
+		// actually asked, and "nobody" is the line that tells the
+		// operator this one is entirely theirs to chase.
+		asked := s.askVanishedLocked(gone)
+		who := fmt.Sprintf("%d responsible person(s) have been asked directly, once, with their own confirm/cancel links.", asked)
+		if asked == 0 {
+			who = "NOBODY was asked — none of these events has a responsible with a usable channel. This one is yours to chase by hand."
+		}
 		s.notifyAdminLocked(fmt.Sprintf("Gone from the calendar: %d event(s)", len(gone)),
 			"These events are no longer in the source calendar. stattii has NOT cancelled them — a feed glitch must never send cancellation mail.\n"+
 				strings.Join(lines, "\n")+
-				"\n\nIf they are really off, cancel them in the panel (that sends the notices). If the feed is wrong, fix the feed — they clear on the next fetch. "+
+				"\n\n"+who+
+				"\nIf they are really off, cancel them in the panel (that sends the notices). If the feed is wrong, fix the feed — they clear on the next fetch. "+
 				"Until then their reminders go out as usual, with a note that the entry disappeared.")
 	}
 
@@ -282,6 +291,58 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 	s.state.LastImport = &rep
 	s.saveLocked()
 	return rep
+}
+
+// askVanishedLocked tells the responsible people that their occurrence
+// left the source calendar — once per disappearance, on the marker
+// transition its caller already filtered for.
+//
+// The admin page alone is not enough: the assignee is the one person who
+// knows whether "gone from the feed" means "off" or "glitch", and the
+// reminder cannot carry that question. The reminder is one-shot, so an
+// occurrence that vanishes after its ask went out reaches nobody — while
+// an if_unconfirmed=cancel deadline still fires. Same links as the
+// reminder (linksLocked reuses the pair), so answering either message
+// lands on the same decision. Returns how many people were asked — the
+// admin page says so, and zero is a fact the operator must see.
+func (s *Service) askVanishedLocked(gone []*Event) int {
+	asked := 0
+	for _, e := range gone {
+		_, reachable := s.reachableLocked(e.ID)
+		if len(reachable) == 0 {
+			continue // unstaffed or unreachable — the admin page stands alone
+		}
+		header := e.Title + "\n" + e.StartsAt.Format(timeFmt)
+		if e.Location != "" {
+			header += "\nLocation: " + e.Location
+		}
+		header += "\n\nThis entry has disappeared from the source calendar. " +
+			"stattii has NOT cancelled it — a feed glitch must never send cancellation mail, so this is your decision."
+		if e.IfUnconfirmed == "cancel" {
+			header += fmt.Sprintf("\nIf nobody answers, it WILL auto-cancel at its deadline (%s).",
+				e.StartsAt.Add(-s.cfg.DeadlineLead).Format(timeFmt))
+		}
+		for _, p := range reachable {
+			cTok, xTok := s.linksLocked(e.ID, p.ID)
+			s.enqueueToPersonLocked(p, OutboxItem{
+				EventID: e.ID, Purpose: "vanished",
+				Subject: "Disappeared from the calendar: " + e.Title,
+				Body: fmt.Sprintf(
+					"%s\n\nDoes it still take place?\nYES, keep it:  %s\nNO, cancel it: %s\n\nThese links are personal — please do not forward.",
+					header, s.actionURL(cTok), s.actionURL(xTok)),
+				Buttons: []Button{
+					{Label: "✅ Takes place", Data: cTok},
+					{Label: "❌ Cancel event", Data: xTok},
+				},
+			})
+		}
+		asked += len(reachable)
+		s.auditLocked("vanished.asked", map[string]any{
+			"event_id": e.ID, "title": e.Title,
+			"people": personNames(reachable), "count": len(reachable),
+		})
+	}
+	return asked
 }
 
 // LastImport returns a copy of the most recent calendar sync report.
