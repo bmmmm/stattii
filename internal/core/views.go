@@ -114,6 +114,10 @@ type OverviewAssignee struct {
 	Role      string     `json:"role,omitempty"`
 	Trust     TrustLevel `json:"trust"`
 	Reachable bool       `json:"reachable"`
+	// ChannelProblem is set when the person is reachable but no channel
+	// passes its format check — a different handhold for the operator
+	// than "no channel at all", so the two must not share a wording.
+	ChannelProblem bool `json:"channel_problem,omitempty"`
 	// Latest recorded response for this event; empty Action = pending.
 	Action ActionKind `json:"action,omitempty"`
 	Via    string     `json:"via,omitempty"`
@@ -157,6 +161,7 @@ func (s *Service) Overview() Overview {
 				continue
 			}
 			oa := OverviewAssignee{PersonID: p.ID, Name: p.Name, Role: a.Role, Trust: p.Trust, Reachable: p.Reachable()}
+			oa.ChannelProblem = oa.Reachable && !p.HasValidChannel()
 			if r, ok := latest[respKey{e.ID, p.ID}]; ok {
 				oa.Action, oa.Via, oa.At = r.Action, r.Via, r.At
 			}

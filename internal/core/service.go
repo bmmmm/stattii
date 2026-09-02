@@ -108,6 +108,10 @@ type Service struct {
 	// — paged once on the way in, once on the way out. In-memory only;
 	// a restart is a fresh episode.
 	importFailed bool
+	// channelsScanned: stored channels have been checked for format
+	// problems once in this process (see noteChannelProblemsLocked).
+	// Same deal — in-memory, a restart looks again.
+	channelsScanned bool
 }
 
 func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {

@@ -80,7 +80,10 @@ someone reachable, the deadline does not wait at all, and the admin gets
 one early warning ("Nobody can be reached") while there is still time to
 add a channel or assign someone else — an event created or staffed inside
 the deadline window gets no warning, its deadline fires on the next tick.
-Blank or malformed addresses are rejected on entry.
+Blank or malformed addresses are rejected on entry — one stored before
+that check existed is shown in the panel with its reason, but never
+removed and never counted as unreachable: the ask still goes out over
+it, because a format rule is not allowed to cancel anything.
 
 On Telegram, reminders carry inline buttons: one tap on ✅/❌ answers
 directly in the chat (the server long-polls the Bot API; no public webhook

@@ -25,9 +25,22 @@ const testToken = "test-admin-token"
 // admin are separate muxes on purpose (separate listeners in serve).
 func newTestServer(t *testing.T) (*core.Service, http.Handler, http.Handler) {
 	t.Helper()
+	return newTestServerWithState(t, nil)
+}
+
+// newTestServerWithState seeds state.json before the service reads it —
+// the only way to get data that AddPerson/UpdatePerson never validated,
+// which is what a store written before v0.7.0 looks like.
+func newTestServerWithState(t *testing.T, seed *core.State) (*core.Service, http.Handler, http.Handler) {
+	t.Helper()
 	store, err := core.NewJSONStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if seed != nil {
+		if err := store.Save(seed); err != nil {
+			t.Fatal(err)
+		}
 	}
 	svc, err := core.NewService(store, core.Config{BaseURL: "http://x.local"}, nullNotifier{})
 	if err != nil {

@@ -229,12 +229,16 @@ type adminOverviewData struct {
 	// last report — a missing occurrence stays listed until it is back
 	// in the feed or cancelled here.
 	Vanished []core.Event
+	// Broken: stored addresses that fail their own format check. Computed
+	// live, so a repaired address leaves the list at once.
+	Broken []core.ChannelProblem
 }
 
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	d := adminOverviewData{CSRF: s.csrfFor(r),
 		Ov: s.svc.Overview(), All: r.URL.Query().Get("all") == "1", People: s.svc.People(),
-		Calendar: s.svc.CalendarConfigured(), LastImport: s.svc.LastImport(), Vanished: s.svc.VanishedEvents()}
+		Calendar: s.svc.CalendarConfigured(), LastImport: s.svc.LastImport(), Vanished: s.svc.VanishedEvents(),
+		Broken: s.svc.ChannelProblems()}
 	if !d.All {
 		now := time.Now()
 		var keep []core.OverviewEvent

@@ -49,9 +49,22 @@ func (f *fakeNotifier) byPurposeTo(to string) []sent {
 
 func newTestService(t *testing.T, fake *fakeNotifier) (*Service, *time.Time) {
 	t.Helper()
+	return newTestServiceWithState(t, fake, nil)
+}
+
+// newTestServiceWithState seeds state.json before the service reads it —
+// the only way to produce data that AddPerson/UpdatePerson never
+// validated, which is exactly what a pre-v0.7.0 store looks like.
+func newTestServiceWithState(t *testing.T, fake *fakeNotifier, seed *State) (*Service, *time.Time) {
+	t.Helper()
 	store, err := NewJSONStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if seed != nil {
+		if err := store.Save(seed); err != nil {
+			t.Fatal(err)
+		}
 	}
 	svc, err := NewService(store, Config{
 		BaseURL:       "http://test.local",

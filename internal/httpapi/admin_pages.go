@@ -40,7 +40,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 </div>
 </body></html>{{end}}
 
-{{define "admin_chip"}}<span class="chip {{if eq .Action "confirm"}}ok{{else if eq .Action "cancel"}}bad{{end}}">{{if eq .Action "confirm"}}✓{{else if eq .Action "cancel"}}✗{{else}}–{{end}} {{.Name}}{{if .Role}} ({{.Role}}){{end}}{{if not .Reachable}} · no channel{{end}}</span>{{end}}
+{{define "admin_chip"}}<span class="chip {{if eq .Action "confirm"}}ok{{else if eq .Action "cancel"}}bad{{end}}">{{if eq .Action "confirm"}}✓{{else if eq .Action "cancel"}}✗{{else}}–{{end}} {{.Name}}{{if .Role}} ({{.Role}}){{end}}{{if not .Reachable}} · no channel{{else if .ChannelProblem}} · channel looks broken{{end}}</span>{{end}}
 
 {{define "admin_overview"}}{{template "admin_head"}}
 <h1>stattii admin</h1>
@@ -52,9 +52,10 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{end}}
 
 {{$imp := .LastImport}}
-{{if or .Proposals .Pending .Vanished (and $imp (or $imp.Conflicts $imp.Skipped $imp.Silent))}}
+{{if or .Proposals .Pending .Vanished .Broken (and $imp (or $imp.Conflicts $imp.Skipped $imp.Silent))}}
 <div class="card">
 <h2>Needs attention</h2>
+{{range .Broken}}<p class="bad">Stored channel does not pass its format check (NOT removed — {{.Name}} still counts as reachable and still gets asked): {{.Name}} · {{.Kind}}: {{.To}} — {{.Problem}}{{if .Assigned}} · {{.Assigned}} upcoming event(s){{end}} · <a href="/admin/people">fix it</a></p>{{end}}
 {{range .Vanished}}<p class="bad">Gone from the calendar since {{.VanishedAt.Format "02 Jan 15:04"}} (NOT auto-cancelled — <a href="/admin/event/{{.ID}}">cancel it yourself</a> if real{{if eq .IfUnconfirmed "cancel"}}; WILL auto-cancel at its deadline{{end}}): {{.Title}} · {{.StartsAt.Format "Mon, 02 Jan 15:04"}}</p>{{end}}
 {{if $imp}}
 {{range $imp.Silent}}<p class="bad">Moved by the source but nobody was told (no broadcast, no reachable responsible, no guest with an address): {{.}}</p>{{end}}
@@ -119,7 +120,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{if .Ev.Event.SourceUID}}<p class="muted">↻ imported series occurrence</p>{{end}}
 {{if not .Ev.Reachable}}<p class="muted">nobody reachable — the reminder waits, the deadline does not</p>{{end}}
 {{range .Tracks}}
-  <p><strong>{{.A.Name}}</strong>{{if .A.Role}} ({{.A.Role}}){{end}} <span class="muted">· trust: {{.A.Trust}}{{if not .A.Reachable}} · <span class="bad">no channel</span>{{end}}</span>
+  <p><strong>{{.A.Name}}</strong>{{if .A.Role}} ({{.A.Role}}){{end}} <span class="muted">· trust: {{.A.Trust}}{{if not .A.Reachable}} · <span class="bad">no channel</span>{{else if .A.ChannelProblem}} · <span class="bad">channel looks broken — still asked, may reach nobody</span>{{end}}</span>
   <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/links/revoke">{{template "csrf" $.CSRF}}<input type="hidden" name="person_id" value="{{.A.PersonID}}"><button type="submit">Revoke links</button></form>
   <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/unassign">{{template "csrf" $.CSRF}}<input type="hidden" name="person_id" value="{{.A.PersonID}}">{{if $.Ev.Event.SourceUID}}<label><input type="checkbox" name="series" value="1"> whole series</label> {{end}}<button type="submit">Unassign</button></form></p>
   <ul class="tl">
@@ -211,7 +212,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{range .People}}
 <div class="card">
   <h2>{{.Name}} <span class="badge scheduled">{{.Trust}}</span></h2>
-  {{range .Channels}}<p class="muted">{{.Kind}}: {{.To}}</p>{{end}}
+  {{range .Channels}}<p class="{{if .Problem}}bad{{else}}muted{{end}}">{{.Kind}}: {{.To}}{{if .Problem}} — {{.Problem}}. Still stored and still used; fix it below.{{end}}</p>{{end}}
   {{if .LastMsg}}<p class="{{if .LastBad}}bad{{else}}muted{{end}}">{{.LastMsg}}</p>{{end}}
   <p class="muted">Portal: <a href="{{.PortalURL}}">{{.PortalURL}}</a></p>
   <form method="post" action="/admin/people/{{.ID}}/test">{{template "csrf" $.CSRF}}<button type="submit">Send test message</button></form>

@@ -323,3 +323,72 @@ func TestAdminEventPageShowsNobodyWasTold(t *testing.T) {
 		t.Fatalf("pruned outbox turned a told cancellation red:\n%s", rec.Body)
 	}
 }
+
+// A channel stored before the format check existed must be visible in
+// the panel without being touched: named under "Needs attention",
+// flagged red on the people page, still editable in the prefilled form
+// — and never described as "no channel", which is a different problem
+// with a different handhold.
+func TestAdminPanelShowsBrokenChannels(t *testing.T) {
+	const bad = "ana(at)x.local"
+	start := time.Now().Add(48 * time.Hour).UTC()
+	seed := &core.State{
+		People: []core.Person{{
+			ID: "pe_legacy", Name: "ana", Trust: core.TrustRespond, PortalToken: "tok_legacy",
+			Channels: []core.Address{{Kind: "email", To: bad}},
+		}},
+		Events: []core.Event{{
+			ID: "ev_legacy", Title: "Quiet Night", StartsAt: start, EndsAt: start.Add(time.Hour),
+			Status: core.StatusScheduled, IfUnconfirmed: "notify",
+		}},
+		Assignments: []core.Assignment{{EventID: "ev_legacy", PersonID: "pe_legacy"}},
+	}
+	_, _, admin := newTestServerWithState(t, seed)
+	ui := loginAdmin(t, admin)
+
+	get := func(path string) string {
+		t.Helper()
+		req := httptest.NewRequest("GET", path, nil)
+		req.AddCookie(ui.c)
+		rec := httptest.NewRecorder()
+		admin.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d", path, rec.Code)
+		}
+		return rec.Body.String()
+	}
+
+	// The overview card renders even though nothing else needs attention.
+	ov := get("/admin")
+	if !strings.Contains(ov, "Needs attention") {
+		t.Fatalf("no attention card for a broken channel:\n%s", ov)
+	}
+	if !strings.Contains(ov, bad) || !strings.Contains(ov, "ana") {
+		t.Fatalf("attention card does not name person and address:\n%s", ov)
+	}
+	if !strings.Contains(ov, "NOT removed") {
+		t.Fatalf("card does not say the channel was left alone:\n%s", ov)
+	}
+	// The chip must not claim the person has no channel — she has one.
+	if strings.Contains(ov, "· no channel") {
+		t.Fatalf("panel calls a suspect channel 'no channel':\n%s", ov)
+	}
+	if !strings.Contains(ov, "channel looks broken") {
+		t.Fatalf("chip does not distinguish a suspect channel:\n%s", ov)
+	}
+
+	// People page: red, with the reason, and still editable.
+	people := get("/admin/people")
+	if !strings.Contains(people, `class="bad"`) || !strings.Contains(people, "does not look right") {
+		t.Fatalf("people page does not flag the channel with a reason:\n%s", people)
+	}
+	if !strings.Contains(people, `value="`+bad+`"`) {
+		t.Fatalf("the broken address was hidden instead of left editable:\n%s", people)
+	}
+
+	// The event page uses the person-level wording too.
+	ev := get("/admin/event/ev_legacy")
+	if !strings.Contains(ev, "channel looks broken") {
+		t.Fatalf("event page does not flag the suspect channel:\n%s", ev)
+	}
+}

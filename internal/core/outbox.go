@@ -181,6 +181,12 @@ func (s *Service) Tick(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	changed := false
+	// Before anything is sent: say once what is stored but suspect. Here
+	// rather than in NewService because the scan needs s.now(), and the
+	// clock is set after the constructor.
+	if s.noteChannelProblemsLocked() {
+		changed = true
+	}
 	if s.tickRemindersLocked(now) {
 		changed = true
 	}
@@ -299,6 +305,24 @@ func (s *Service) tickRemindersLocked(now time.Time) bool {
 			})
 		}
 		e.ReminderSentAt = now
+		// The ask went out — but if not one of these people has a channel
+		// that passes its format check, it very likely went nowhere. Say
+		// so now, while the deadline is still ahead, instead of waiting
+		// for the delivery failure to escalate. One page per confirmation
+		// cycle by construction: this branch runs once, right where
+		// ReminderSentAt is set. A move or reinstate clears that and
+		// earns a fresh warning, which is correct — it is a new ask.
+		if !anyValidChannel(assignees) {
+			names := personNames(assignees)
+			s.auditLocked("staffing.channels_broken", map[string]any{
+				"event_id": e.ID, "people": names, "count": len(assignees)})
+			s.notifyAdminLocked("Asked over a broken channel: "+e.Title,
+				fmt.Sprintf("The confirmation ask for %s on %s was sent to %s — but none of their "+
+					"stored addresses passes its own format check, so it may have reached nobody.\n\n"+
+					"The ask WAS sent and a delivery failure will still escalate; nothing was removed "+
+					"and nobody counts as unreachable. Check the addresses under /admin/people.",
+					e.Title, e.StartsAt.Format(timeFmt), names))
+		}
 		s.auditLocked("reminder.sent", map[string]any{"event_id": e.ID})
 		s.fireWebhooksLocked("reminder.sent", *e)
 		changed = true

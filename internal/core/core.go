@@ -109,7 +109,29 @@ type Address struct {
 // Usable reports whether the address can carry a message at all. A blank
 // kind or target is a placeholder that would count as "has a channel"
 // and silently defeat every reachability check.
+//
+// Deliberately structural, not formal: Usable asks "is there something to
+// try", Validate asks "does it look right". Binding reachability to
+// Validate would be wrong in both directions. Validate is in places
+// stricter than the channel — parseEmail insists on a dot in the domain,
+// so root@garage fails it while an internal SMTP server delivers it fine
+// — and a person declared unreachable is skipped by
+// enqueueToPersonLocked, whereupon tickDeadlinesLocked stops waiting and
+// an if_unconfirmed=cancel event is cancelled without a single message
+// ever going out. A format suspicion must never cancel anything. The
+// delivery attempt stays the ground truth; a suspect address is reported
+// (see ChannelProblems) and left for the operator to fix.
 func (a Address) Usable() bool { return a.Kind != "" && a.To != "" }
+
+// Problem returns the operator-facing reason this address fails its
+// format check, or "" when it is sound. One wording for the panel, the
+// audit trail and the admin mail — they must not drift apart.
+func (a Address) Problem() string {
+	if err := a.Validate(); err != nil {
+		return err.Error()
+	}
+	return ""
+}
 
 // Validate checks an address the way its channel will need it. Error
 // texts are operator-facing: they come back from the admin API and forms.
@@ -148,6 +170,20 @@ type Person struct {
 func (p *Person) Reachable() bool {
 	for _, ch := range p.Channels {
 		if ch.Usable() {
+			return true
+		}
+	}
+	return false
+}
+
+// HasValidChannel reports whether at least one channel also passes its
+// format check. Weaker than Reachable and never used to decide whether
+// to send: it only tells the operator that an ask is going out over a
+// channel nothing here believes in. See Address.Usable for why the two
+// must stay apart.
+func (p *Person) HasValidChannel() bool {
+	for _, ch := range p.Channels {
+		if ch.Usable() && ch.Problem() == "" {
 			return true
 		}
 	}

@@ -39,9 +39,22 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    A fan-out that reaches **nobody** escalates (`nobodyToldLocked`: audit
    `propagation.empty`, admin page, red panel card from the event's own
    `FanOutAt`/`FanOutCount` — never from the prunable outbox); guarded by
-   `TestCancelWithNoRecipientsPagesAdmin`. Assigned ≠ reachable: the
-   scheduler waits only for people with a usable channel
+   `TestCancelWithNoRecipientsPagesAdmin`. Assigned ≠ reachable ≠ sound:
+   the scheduler waits only for people with a usable channel
    (`Person.Reachable`); guarded by `TestDeadlineFiresForUnreachableAssignees`.
+   Reachability stays **structural** — `Address.Usable` asks "is there
+   something to try", `Address.Validate` asks "does it look right", and
+   the two must never be merged. Validate is in places stricter than the
+   channel (`parseEmail` wants a dot in the domain, so `root@garage`
+   fails it while internal SMTP delivers it), so letting it decide would
+   auto-cancel `if_unconfirmed=cancel` events over a typo, without one
+   message ever going out. A suspect stored address is therefore
+   *reported*, never acted on: `Service.ChannelProblems` (live, never
+   cached), one `channel.invalid` page per process, and one
+   `staffing.channels_broken` page at the moment an ask goes out over
+   nothing but suspect channels. Guarded by
+   `TestLegacyChannelStaysReachable`, `TestBrokenChannelStillGetsTheAsk`
+   and `TestAdminPanelShowsBrokenChannels`.
 4. **stdlib only.** Any new dependency needs a stated justification.
 5. **Tokens are random, DB-looked-up, revocable.** Never JWT, never decodable.
    The admin session cookie is one of them: a random id resolved against

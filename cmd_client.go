@@ -514,6 +514,8 @@ func cmdOverview(args []string) error {
 			}
 			if !a.Reachable {
 				role += " [no channel]"
+			} else if a.ChannelProblem {
+				role += " [channel looks broken]"
 			}
 			fmt.Printf("    %s %s%s — %s\n", mark, a.Name, role, detail)
 		}
