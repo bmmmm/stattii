@@ -255,7 +255,14 @@ ssh -L 8789:127.0.0.1:8789 your-server
 ```
 
 or bind it into a VPN/private network (`admin_listen: "10.x.x.x:8789"`),
-or put an internally-restricted reverse proxy in front. For a same-host
+or put an internally-restricted reverse proxy in front.
+
+**Reach the panel over loopback or TLS, not a bare LAN IP.** The session
+cookie is `Secure`, which browsers honour for `https://` *and* for
+loopback (`127.0.0.1`, `localhost`) — both of the routes above work. Open
+the panel as plain `http://192.168.x.x:8789` and the browser silently
+drops the cookie, so the login form keeps coming back: that is the flag
+doing its job, not a bug. Tunnel it, or terminate TLS in front. For a same-host
 proxy the cleanest wiring is a unix socket — any `admin_listen` value
 containing `/` is treated as a socket path (created mode 660, share via
 group ownership):
