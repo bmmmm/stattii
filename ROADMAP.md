@@ -38,6 +38,23 @@
   (panel, page on transition, note in the reminder), the importer keeps
   operator notes. People: `PATCH /people/{id}` / `person set`, unassign
   (event + future series), CI runs govulncheck.
+- **v0.8.0** — a vanished calendar occurrence now asks its responsible
+  people once (`askVanishedLocked`, purpose `vanished`, audit
+  `vanished.asked`), carrying the reminder's own confirm/cancel links;
+  the admin page says how many were asked, or NOBODY. The panel login
+  stops handing out the API token: a random session id resolved against
+  an in-memory `sessionStore`, and every mutating form carries the
+  session's CSRF token — **existing panel logins become invalid with
+  this upgrade, and every restart requires a fresh login** (nothing is
+  persisted). `readJSON` rejects unknown fields and trailing data across
+  the whole API, not just `PATCH /people`, so a mistyped key is a loud
+  400 instead of a 200 that changed nothing. Channels stored before
+  their format check existed are reported, never acted on
+  (`ChannelProblems`, computed live; one `channel.invalid` page per
+  process, one `staffing.channels_broken` page when an ask goes out over
+  nothing but suspect addresses) — reachability stays structural on
+  purpose, since letting the validator decide would auto-cancel events
+  over a typo, with no message ever sent.
 
 ## Phase 2 — production go-live
 
