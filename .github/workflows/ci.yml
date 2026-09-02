@@ -20,6 +20,9 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
+      # stdlib only, so this is really a check of the Go toolchain's
+      # own advisories against the symbols we actually call.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       # -race matters here: scheduler, Telegram poller and two HTTP
       # servers share one mutex-guarded Service.
       - run: go test -race ./...
