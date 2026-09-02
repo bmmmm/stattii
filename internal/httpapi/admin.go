@@ -14,18 +14,29 @@ import (
 	"github.com/bmmmm/stattii/internal/core"
 )
 
-// The web admin lives on the admin listener only (see AdminHandler) and
-// authenticates with the same admin token as the API: the operator pastes
-// it once into a login form, it is kept in an HttpOnly cookie and verified
-// constant-time on every request. SameSite=Strict plus POST-only mutations
-// is the CSRF baseline; GET never mutates here either.
+// The web admin lives on the admin listener only (see AdminHandler). The
+// operator pastes the admin token once into the login form; from then on
+// the browser holds a random session id in an HttpOnly cookie — NOT the
+// token, which would make every cookie leak a full API credential. The
+// session is server-side (sessionStore), so logging out really ends it.
+//
+// CSRF: SameSite=Strict and POST-only mutations are the baseline, and
+// every mutating form carries a per-session token that adminAuth verifies
+// constant-time. GET never mutates here either.
 
 const adminCookie = "stattii_admin"
+
+// adminSessionTTL is how long one login lasts. It matches the cookie's
+// MaxAge — a cookie outliving its server-side session would look logged
+// in and act logged out.
+const adminSessionTTL = 30 * 24 * time.Hour
 
 func (s *Server) registerAdminUI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin", s.adminAuth(s.adminOverview))
 	mux.HandleFunc("POST /admin/login", s.adminLogin)
-	mux.HandleFunc("POST /admin/logout", s.adminLogout)
+	// Logging out is a mutation too: an attacker-forced logout is only a
+	// nuisance, but the token check is the same one line.
+	mux.HandleFunc("POST /admin/logout", s.adminAuth(s.adminLogout))
 	mux.HandleFunc("GET /admin/event/{id}", s.adminAuth(s.adminEvent))
 	mux.HandleFunc("POST /admin/event/{id}/confirm", s.adminAuth(s.adminEventConfirm))
 	mux.HandleFunc("POST /admin/event/{id}/cancel", s.adminAuth(s.adminEventCancel))
@@ -48,16 +59,46 @@ func (s *Server) registerAdminUI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/outbox/{id}/retry", s.adminAuth(s.adminOutboxRetry))
 }
 
-func (s *Server) adminAuthed(r *http.Request) bool {
+// adminSessionID reads the cookie without judging it.
+func adminSessionID(r *http.Request) string {
 	c, err := r.Cookie(adminCookie)
-	return err == nil && s.adminToken != "" &&
-		subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.adminToken)) == 1
+	if err != nil {
+		return ""
+	}
+	return c.Value
+}
+
+// adminSessionOf resolves the request's cookie to its live session.
+func (s *Server) adminSessionOf(r *http.Request) (adminSession, bool) {
+	if s.adminToken == "" {
+		return adminSession{}, false // no token configured: nobody can log in
+	}
+	return s.sessions.lookup(adminSessionID(r))
+}
+
+// csrfFor is the token the templates render into every mutating form.
+func (s *Server) csrfFor(r *http.Request) string {
+	sess, ok := s.adminSessionOf(r)
+	if !ok {
+		return ""
+	}
+	return sess.csrf
 }
 
 func (s *Server) adminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.adminAuthed(r) {
+		sess, ok := s.adminSessionOf(r)
+		if !ok {
 			renderTo(w, adminTmpl, "admin_login", http.StatusUnauthorized, nil)
+			return
+		}
+		// Every mutation is a POST (invariant 1), so this one check
+		// covers the whole panel — a route added without a form token
+		// fails loudly instead of being quietly forgeable.
+		if r.Method == http.MethodPost &&
+			subtle.ConstantTimeCompare([]byte(r.FormValue("csrf")), []byte(sess.csrf)) != 1 {
+			renderTo(w, adminTmpl, "admin_error", http.StatusForbidden,
+				"That form was stale or came from somewhere else. Reload the page and try again.")
 			return
 		}
 		next(w, r)
@@ -87,18 +128,21 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		renderTo(w, adminTmpl, "admin_login", http.StatusUnauthorized, "That token is not right.")
 		return
 	}
+	// The token bought a session; it does not travel any further.
+	id, _ := s.sessions.create()
 	http.SetCookie(w, &http.Cookie{
-		Name: adminCookie, Value: tok, Path: "/admin",
+		Name: adminCookie, Value: id, Path: "/admin",
 		HttpOnly: true, SameSite: http.SameSiteStrictMode,
 		// Secure also works on http://127.0.0.1 tunnels — browsers treat
 		// loopback as a trustworthy origin.
 		Secure: true,
-		MaxAge: int((30 * 24 * time.Hour).Seconds()),
+		MaxAge: int(adminSessionTTL.Seconds()),
 	})
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
 func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
+	s.sessions.drop(adminSessionID(r))
 	http.SetCookie(w, &http.Cookie{Name: adminCookie, Path: "/admin", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
@@ -171,6 +215,7 @@ type adminPendingItem struct {
 }
 
 type adminOverviewData struct {
+	CSRF       string // per-session form token, see adminAuth
 	Ov         core.Overview
 	Hidden     int // past events not shown (use ?all=1)
 	All        bool
@@ -187,7 +232,8 @@ type adminOverviewData struct {
 }
 
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
-	d := adminOverviewData{Ov: s.svc.Overview(), All: r.URL.Query().Get("all") == "1", People: s.svc.People(),
+	d := adminOverviewData{CSRF: s.csrfFor(r),
+		Ov: s.svc.Overview(), All: r.URL.Query().Get("all") == "1", People: s.svc.People(),
 		Calendar: s.svc.CalendarConfigured(), LastImport: s.svc.LastImport(), Vanished: s.svc.VanishedEvents()}
 	if !d.All {
 		now := time.Now()
@@ -260,6 +306,7 @@ type adminTrack struct {
 }
 
 type adminEventData struct {
+	CSRF        string // per-session form token, see adminAuth
 	Ev          core.OverviewEvent
 	Tracks      []adminTrack
 	Propagation core.PropagationStatus
@@ -286,7 +333,7 @@ func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
 		s.renderAdminError(w, core.ErrNotFound)
 		return
 	}
-	d := adminEventData{Ev: *found, People: s.svc.People(),
+	d := adminEventData{CSRF: s.csrfFor(r), Ev: *found, People: s.svc.People(),
 		NobodyTold: !found.Event.FanOutAt.IsZero() && found.Event.FanOutCount == 0}
 	outbox := s.svc.OutboxItems(false)
 	responses := s.svc.Responses(id)
@@ -435,6 +482,7 @@ func (s *Server) adminEventCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 type adminPeopleData struct {
+	CSRF   string // per-session form token, see adminAuth
 	People []adminPerson
 }
 
@@ -450,7 +498,7 @@ type adminPerson struct {
 }
 
 func (s *Server) adminPeople(w http.ResponseWriter, r *http.Request) {
-	var d adminPeopleData
+	d := adminPeopleData{CSRF: s.csrfFor(r)}
 	items := s.svc.OutboxItems(false)
 	// Newest item per person in one pass; ties keep the earlier item,
 	// like the per-person scan this replaces.

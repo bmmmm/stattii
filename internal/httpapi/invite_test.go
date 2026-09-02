@@ -146,8 +146,8 @@ func TestInviteCancelledShowsNoForm(t *testing.T) {
 // end: create the link in the panel, watch an answer arrive, remove a guest.
 func TestAdminInviteAndGuestList(t *testing.T) {
 	svc, _, admin := newTestServer(t)
-	w := doForm(t, admin, "/admin/login", url.Values{"token": {testToken}}, nil)
-	cookie := adminCookieFrom(t, w)
+	ui := loginAdmin(t, admin)
+	cookie := ui.c
 	if cookie == nil {
 		t.Fatal("login did not set the admin cookie")
 	}
@@ -157,10 +157,10 @@ func TestAdminInviteAndGuestList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if w := doForm(t, admin, "/admin/event/"+e.ID+"/invite", nil, cookie); w.Code != http.StatusSeeOther {
+	if w := ui.post(t, "/admin/event/"+e.ID+"/invite", nil); w.Code != http.StatusSeeOther {
 		t.Fatalf("create invite: got %d, want 303", w.Code)
 	}
-	w = adminGet(t, admin, "/admin/event/"+e.ID, cookie)
+	w := adminGet(t, admin, "/admin/event/"+e.ID, cookie)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "http://x.local/i/") {
 		t.Fatalf("event page misses the invite link: %d\n%s", w.Code, w.Body)
 	}
@@ -179,7 +179,7 @@ func TestAdminInviteAndGuestList(t *testing.T) {
 	}
 
 	st, _ = svc.Invite(e.ID)
-	if w := doForm(t, admin, "/admin/event/"+e.ID+"/guests/"+st.Guests[0].ID+"/remove", nil, cookie); w.Code != http.StatusSeeOther {
+	if w := ui.post(t, "/admin/event/"+e.ID+"/guests/"+st.Guests[0].ID+"/remove", nil); w.Code != http.StatusSeeOther {
 		t.Fatalf("remove guest: got %d, want 303", w.Code)
 	}
 	if w = adminGet(t, admin, "/admin/event/"+e.ID, cookie); strings.Contains(w.Body.String(), "Ana") {
@@ -191,8 +191,8 @@ func TestAdminInviteAndGuestList(t *testing.T) {
 // rule: rendering the event page must never create the invite link.
 func TestAdminEventPageDoesNotMintInvite(t *testing.T) {
 	svc, _, admin := newTestServer(t)
-	w := doForm(t, admin, "/admin/login", url.Values{"token": {testToken}}, nil)
-	cookie := adminCookieFrom(t, w)
+	ui := loginAdmin(t, admin)
+	cookie := ui.c
 	start := time.Now().Add(40 * time.Hour)
 	e, err := svc.CreateEvent(core.EventInput{Title: "Garden Party", StartsAt: start})
 	if err != nil {

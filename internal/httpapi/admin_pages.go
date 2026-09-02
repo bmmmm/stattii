@@ -18,9 +18,14 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 .bad{color:#c0392b}
 </style>{{end}}
 
+{{/* The per-session form token adminAuth verifies on every POST. The
+     login form is the one exception — there is no session to bind to
+     yet, and SameSite=Strict covers it. */}}
+{{define "csrf"}}<input type="hidden" name="csrf" value="{{.}}">{{end}}
+
 {{define "admin_nav"}}
 <p class="muted"><a href="/admin">Events</a> · <a href="/admin/people">People</a>
-<form method="post" action="/admin/logout" style="float:right"><button type="submit">Log out</button></form></p>
+<form method="post" action="/admin/logout" style="float:right">{{template "csrf" .CSRF}}<button type="submit">Log out</button></form></p>
 {{end}}
 
 {{define "admin_login"}}{{template "admin_head"}}
@@ -39,10 +44,10 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 
 {{define "admin_overview"}}{{template "admin_head"}}
 <h1>stattii admin</h1>
-{{template "admin_nav"}}
+{{template "admin_nav" $}}
 
 {{if .Calendar}}
-<p><form method="post" action="/admin/calendar/fetch"><button class="yes" type="submit">Fetch calendar now</button></form>
+<p><form method="post" action="/admin/calendar/fetch">{{template "csrf" $.CSRF}}<button class="yes" type="submit">Fetch calendar now</button></form>
 {{with .LastImport}}<span class="muted">last fetch {{.FetchedAt.Format "02 Jan 15:04"}} — {{.Created}} new · {{.Moved}} moved · {{.Updated}} updated · {{.Unchanged}} unchanged{{if .Vanished}} · {{len .Vanished}} missing{{end}}</span>{{end}}</p>
 {{end}}
 
@@ -60,12 +65,12 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
   <p>Proposal <strong>{{.Kind}}</strong>{{if .Title}} "{{.Title}}"{{end}}{{if .EventID}} for {{.EventID}}{{end}}
   {{if not .StartsAt.IsZero}} → {{.StartsAt.Format "Mon, 02 Jan 15:04"}}{{end}}
   {{if .Note}}<span class="muted">({{.Note}})</span>{{end}}
-  <form method="post" action="/admin/proposals/{{.ID}}"><input type="hidden" name="decision" value="accept"><button class="yes" type="submit">Accept</button></form>
-  <form method="post" action="/admin/proposals/{{.ID}}"><input type="hidden" name="decision" value="reject"><button class="no" type="submit">Reject</button></form></p>
+  <form method="post" action="/admin/proposals/{{.ID}}">{{template "csrf" $.CSRF}}<input type="hidden" name="decision" value="accept"><button class="yes" type="submit">Accept</button></form>
+  <form method="post" action="/admin/proposals/{{.ID}}">{{template "csrf" $.CSRF}}<input type="hidden" name="decision" value="reject"><button class="no" type="submit">Reject</button></form></p>
 {{end}}
 {{range .Pending}}
   <p class="{{if eq .State "failed"}}bad{{else}}muted{{end}}">{{if eq .State "failed"}}UNDELIVERED{{else if eq .State "retrying"}}Retrying{{else}}Queued{{end}} {{.Purpose}} → {{.To}} ({{.Attempts}} attempts)
-  <form method="post" action="/admin/outbox/{{.ID}}/retry"><button type="submit">Retry now</button></form></p>
+  <form method="post" action="/admin/outbox/{{.ID}}/retry">{{template "csrf" $.CSRF}}<button type="submit">Retry now</button></form></p>
 {{end}}
 </div>
 {{end}}
@@ -83,7 +88,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 
 <div class="card">
 <details><summary><strong>New event</strong></summary>
-<form method="post" action="/admin/events">
+<form method="post" action="/admin/events">{{template "csrf" $.CSRF}}
   <label>Title <input name="title" required></label>
   <label>Start <input type="datetime-local" name="starts_at" required></label>
   <label>End <input type="datetime-local" name="ends_at"></label>
@@ -107,7 +112,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 
 {{define "admin_event"}}{{template "admin_head"}}
 <h1>stattii admin</h1>
-{{template "admin_nav"}}
+{{template "admin_nav" $}}
 
 <div class="card">
 {{template "event" .Ev.Event}}
@@ -115,8 +120,8 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{if not .Ev.Reachable}}<p class="muted">nobody reachable — the reminder waits, the deadline does not</p>{{end}}
 {{range .Tracks}}
   <p><strong>{{.A.Name}}</strong>{{if .A.Role}} ({{.A.Role}}){{end}} <span class="muted">· trust: {{.A.Trust}}{{if not .A.Reachable}} · <span class="bad">no channel</span>{{end}}</span>
-  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/links/revoke"><input type="hidden" name="person_id" value="{{.A.PersonID}}"><button type="submit">Revoke links</button></form>
-  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/unassign"><input type="hidden" name="person_id" value="{{.A.PersonID}}">{{if $.Ev.Event.SourceUID}}<label><input type="checkbox" name="series" value="1"> whole series</label> {{end}}<button type="submit">Unassign</button></form></p>
+  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/links/revoke">{{template "csrf" $.CSRF}}<input type="hidden" name="person_id" value="{{.A.PersonID}}"><button type="submit">Revoke links</button></form>
+  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/unassign">{{template "csrf" $.CSRF}}<input type="hidden" name="person_id" value="{{.A.PersonID}}">{{if $.Ev.Event.SourceUID}}<label><input type="checkbox" name="series" value="1"> whole series</label> {{end}}<button type="submit">Unassign</button></form></p>
   <ul class="tl">
   {{range .Entries}}<li class="{{if .Bad}}bad{{else if .Muted}}muted{{end}}">{{.At.Format "02 Jan 15:04"}}&nbsp; {{.Icon}} {{.Text}}</li>
   {{else}}<li class="muted">nothing sent yet — the reminder goes out {{$.Ev.Event.StartsAt.Format "02 Jan"}} minus the reminder lead</li>{{end}}
@@ -129,15 +134,15 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 <div class="card">
 <h2>Actions</h2>
 {{if eq .Ev.Event.Status "cancelled"}}
-  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/reinstate"><button class="yes" type="submit">Reinstate</button></form>
+  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/reinstate">{{template "csrf" $.CSRF}}<button class="yes" type="submit">Reinstate</button></form>
 {{else}}
-  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/confirm"><button class="yes" type="submit">Confirm</button></form>
-  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/cancel">
+  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/confirm">{{template "csrf" $.CSRF}}<button class="yes" type="submit">Confirm</button></form>
+  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/cancel">{{template "csrf" $.CSRF}}
     <input name="reason" placeholder="Reason">
     <button class="no" type="submit">Cancel event</button>
   </form>
   <details><summary>Move</summary>
-    <form method="post" action="/admin/event/{{.Ev.Event.ID}}/move">
+    <form method="post" action="/admin/event/{{.Ev.Event.ID}}/move">{{template "csrf" $.CSRF}}
       <label>New start <input type="datetime-local" name="starts_at" required></label>
       <label>New end <input type="datetime-local" name="ends_at"></label>
       <input name="note" placeholder="Why?">
@@ -146,7 +151,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
   </details>
 {{end}}
 <details><summary>Assign someone</summary>
-  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/assign">
+  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/assign">{{template "csrf" $.CSRF}}
     <select name="person_id">{{range .People}}<option value="{{.ID}}">{{.Name}} ({{.Trust}})</option>{{end}}</select>
     <input name="role" placeholder="Role (optional)">
     {{if .Ev.Event.SourceUID}}<label><input type="checkbox" name="series" value="1"> whole series (every imported occurrence, incl. future fetches)</label>{{end}}
@@ -159,17 +164,17 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 <h2>Party invite</h2>
 {{if .Invite.Active}}
   <p>One link for everyone: <a href="{{.Invite.URL}}">{{.Invite.URL}}</a>
-  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/invite/revoke"><button class="no" type="submit">Revoke link</button></form></p>
+  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/invite/revoke">{{template "csrf" $.CSRF}}<button class="no" type="submit">Revoke link</button></form></p>
   <p>{{.Invite.Yes}} coming · {{.Invite.No}} cannot make it</p>
 {{else}}
-  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/invite"><button class="yes" type="submit">Create invite link</button></form>
+  <form method="post" action="/admin/event/{{.Ev.Event.ID}}/invite">{{template "csrf" $.CSRF}}<button class="yes" type="submit">Create invite link</button></form>
   <p class="muted">One link, shared with everyone — invitees register themselves.</p>
 {{end}}
 {{range .Invite.Guests}}
   <p><span class="chip {{if eq .Status "yes"}}ok{{else}}bad{{end}}">{{if eq .Status "yes"}}✓{{else}}✗{{end}} {{.Name}}</span>
   <span class="muted">{{if .Email}}{{.Email}}{{else}}no address — cannot be told about a cancellation{{end}} · {{.UpdatedAt.Format "02 Jan 15:04"}}{{if .Note}} — {{.Note}}{{end}}</span>
   {{if .NoticeState}}<span class="{{if eq .NoticeState "failed"}}bad{{else}}muted{{end}}">{{if eq .NoticeState "delivered"}}✓{{else if eq .NoticeState "failed"}}✗{{else}}…{{end}} {{.LastNotice}} {{.NoticeState}}</span>{{end}}
-  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/guests/{{.ID}}/remove"><button type="submit">Remove</button></form></p>
+  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/guests/{{.ID}}/remove">{{template "csrf" $.CSRF}}<button type="submit">Remove</button></form></p>
 {{end}}
 {{if and .Invite.Active (not .Invite.Guests)}}<p class="muted">nobody has answered yet</p>{{end}}
 </div>
@@ -201,7 +206,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 
 {{define "admin_people"}}{{template "admin_head"}}
 <h1>stattii admin</h1>
-{{template "admin_nav"}}
+{{template "admin_nav" $}}
 
 {{range .People}}
 <div class="card">
@@ -209,10 +214,10 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
   {{range .Channels}}<p class="muted">{{.Kind}}: {{.To}}</p>{{end}}
   {{if .LastMsg}}<p class="{{if .LastBad}}bad{{else}}muted{{end}}">{{.LastMsg}}</p>{{end}}
   <p class="muted">Portal: <a href="{{.PortalURL}}">{{.PortalURL}}</a></p>
-  <form method="post" action="/admin/people/{{.ID}}/test"><button type="submit">Send test message</button></form>
-  <form method="post" action="/admin/people/{{.ID}}/rotate-portal"><button type="submit">Rotate portal link</button></form>
+  <form method="post" action="/admin/people/{{.ID}}/test">{{template "csrf" $.CSRF}}<button type="submit">Send test message</button></form>
+  <form method="post" action="/admin/people/{{.ID}}/rotate-portal">{{template "csrf" $.CSRF}}<button type="submit">Rotate portal link</button></form>
   <details><summary>Edit</summary>
-  <form method="post" action="/admin/people/{{.ID}}/edit">
+  <form method="post" action="/admin/people/{{.ID}}/edit">{{template "csrf" $.CSRF}}
     <label>Name <input name="name" value="{{.Name}}" required></label>
     <label>Trust <select name="trust"><option{{if eq .Trust "respond"}} selected{{end}}>respond</option><option{{if eq .Trust "propose"}} selected{{end}}>propose</option><option{{if eq .Trust "direct"}} selected{{end}}>direct</option></select></label>
     <label>Email <input name="email" type="email" value="{{.Email}}"></label>
@@ -226,7 +231,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 
 <div class="card">
 <h2>Add person</h2>
-<form method="post" action="/admin/people">
+<form method="post" action="/admin/people">{{template "csrf" $.CSRF}}
   <label>Name <input name="name" required></label>
   <label>Trust <select name="trust"><option>respond</option><option>propose</option><option>direct</option></select></label>
   <label>Email <input name="email" type="email"></label>

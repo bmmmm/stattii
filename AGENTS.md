@@ -44,6 +44,14 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    (`Person.Reachable`); guarded by `TestDeadlineFiresForUnreachableAssignees`.
 4. **stdlib only.** Any new dependency needs a stated justification.
 5. **Tokens are random, DB-looked-up, revocable.** Never JWT, never decodable.
+   The admin session cookie is one of them: a random id resolved against
+   the in-memory `sessionStore`, **never the admin token itself** — that
+   equivalence made every cookie leak a full API credential. Every
+   mutating panel form carries the session's CSRF token, checked in
+   `adminAuth`; guarded by `TestAdminCookieIsNotTheAPIToken`,
+   `TestCSRFTokenIsBoundToItsSession` and
+   `TestEveryPanelFormCarriesTheCSRFToken` (which fails on a new form
+   that forgets `{{template "csrf" $.CSRF}}`).
 6. **Secrets never in tracked files.** `config.json` is gitignored; the
    shipped blanks (`config.example.json`, `examples/`) carry placeholders
    only, and `TestShippedConfigBlanksParse` keeps them valid.

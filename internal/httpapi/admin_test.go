@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,45 @@ func adminCookieFrom(t *testing.T, w *httptest.ResponseRecorder) *http.Cookie {
 		}
 	}
 	return nil
+}
+
+var csrfField = regexp.MustCompile(`name="csrf" value="([0-9a-f]+)"`)
+
+// adminUI is a logged-in browser: the session cookie plus the form token
+// the panel renders. Tests post through it, so a form the panel does not
+// hand a token to fails here the same way it would in a browser.
+type adminUI struct {
+	h    http.Handler
+	c    *http.Cookie
+	csrf string
+}
+
+func loginAdmin(t *testing.T, h http.Handler) adminUI {
+	t.Helper()
+	login := doForm(t, h, "/admin/login", url.Values{"token": {testToken}}, nil)
+	c := adminCookieFrom(t, login)
+	if c == nil {
+		t.Fatalf("login set no session cookie: %d", login.Code)
+	}
+	req := httptest.NewRequest("GET", "/admin", nil)
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	m := csrfField.FindStringSubmatch(rec.Body.String())
+	if m == nil {
+		t.Fatalf("panel rendered no csrf token: %d\n%s", rec.Code, rec.Body)
+	}
+	return adminUI{h: h, c: c, csrf: m[1]}
+}
+
+// post submits a panel form the way the rendered page would.
+func (a adminUI) post(t *testing.T, path string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	if form == nil {
+		form = url.Values{}
+	}
+	form.Set("csrf", a.csrf)
+	return doForm(t, a.h, path, form, a.c)
 }
 
 func TestAdminUILoginFlow(t *testing.T) {
@@ -70,14 +110,13 @@ func TestAdminUILoginFlow(t *testing.T) {
 
 func TestAdminUIActions(t *testing.T) {
 	svc, _, admin := newTestServer(t)
-	login := doForm(t, admin, "/admin/login", url.Values{"token": {testToken}}, nil)
-	c := adminCookieFrom(t, login)
+	ui := loginAdmin(t, admin)
 
 	// Create an event through the UI form.
 	start := time.Now().Add(48 * time.Hour).Format("2006-01-02T15:04")
-	w := doForm(t, admin, "/admin/events", url.Values{
+	w := ui.post(t, "/admin/events", url.Values{
 		"title": {"UI Event"}, "starts_at": {start}, "if_unconfirmed": {"notify"},
-	}, c)
+	})
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("create: %d\n%s", w.Code, w.Body)
 	}
@@ -88,7 +127,7 @@ func TestAdminUIActions(t *testing.T) {
 	id := events[0].ID
 
 	// Cancel it with a reason — the propagation transaction must run.
-	w = doForm(t, admin, "/admin/event/"+id+"/cancel", url.Values{"reason": {"ui test"}}, c)
+	w = ui.post(t, "/admin/event/"+id+"/cancel", url.Values{"reason": {"ui test"}})
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("cancel: %d\n%s", w.Code, w.Body)
 	}
@@ -103,6 +142,16 @@ func TestAdminUIActions(t *testing.T) {
 	}
 	if e, _ := svc.EventByID(id); e.Status != core.StatusCancelled {
 		t.Fatal("unauthenticated action mutated state")
+	}
+
+	// With the cookie but without the form token it is refused too — a
+	// cross-site POST carries the cookie, never the rendered field.
+	w = doForm(t, admin, "/admin/event/"+id+"/reinstate", nil, ui.c)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("CSRF-less action: got %d, want 403", w.Code)
+	}
+	if e, _ := svc.EventByID(id); e.Status != core.StatusCancelled {
+		t.Fatal("a POST without the form token mutated state")
 	}
 }
 
@@ -138,8 +187,8 @@ func TestAdminLoginThrottledAndAudited(t *testing.T) {
 // and the event page's Unassign button removes the track.
 func TestAdminPeopleEditAndUnassign(t *testing.T) {
 	svc, _, admin := newTestServer(t)
-	login := doForm(t, admin, "/admin/login", url.Values{"token": {testToken}}, nil)
-	c := adminCookieFrom(t, login)
+	ui := loginAdmin(t, admin)
+	c := ui.c
 	p, err := svc.AddPerson("ana", core.TrustRespond, []core.Address{
 		{Kind: "email", To: "ana@x.local"}, {Kind: "webhook", To: "https://hooks.x.local/ana"},
 	})
@@ -155,9 +204,9 @@ func TestAdminPeopleEditAndUnassign(t *testing.T) {
 		t.Fatalf("people page lacks the prefilled edit form:\n%s", rec.Body)
 	}
 
-	w := doForm(t, admin, "/admin/people/"+p.ID+"/edit", url.Values{
+	w := ui.post(t, "/admin/people/"+p.ID+"/edit", url.Values{
 		"name": {"Ana L."}, "trust": {"propose"}, "email": {"ana@new.local"}, "telegram": {"99"},
-	}, c)
+	})
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("edit: %d\n%s", w.Code, w.Body)
 	}
@@ -187,7 +236,7 @@ func TestAdminPeopleEditAndUnassign(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "/admin/event/"+e.ID+"/unassign") {
 		t.Fatalf("event page lacks the unassign button:\n%s", rec.Body)
 	}
-	w = doForm(t, admin, "/admin/event/"+e.ID+"/unassign", url.Values{"person_id": {p.ID}}, c)
+	w = ui.post(t, "/admin/event/"+e.ID+"/unassign", url.Values{"person_id": {p.ID}})
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("unassign: %d\n%s", w.Code, w.Body)
 	}
@@ -200,8 +249,8 @@ func TestAdminPeopleEditAndUnassign(t *testing.T) {
 // open decision, not a line in the last report.
 func TestAdminOverviewKeepsVanishedAcrossFetches(t *testing.T) {
 	svc, _, admin := newTestServer(t)
-	login := doForm(t, admin, "/admin/login", url.Values{"token": {testToken}}, nil)
-	c := adminCookieFrom(t, login)
+	ui := loginAdmin(t, admin)
+	c := ui.c
 	now := time.Now()
 	until := now.Add(60 * 24 * time.Hour)
 	a := icsimport.Occurrence{Key: "a/1", UID: "a", Summary: "Stays", Start: now.Add(48 * time.Hour), End: now.Add(49 * time.Hour)}
@@ -226,8 +275,8 @@ func TestAdminOverviewKeepsVanishedAcrossFetches(t *testing.T) {
 // outbox was pruned.
 func TestAdminEventPageShowsNobodyWasTold(t *testing.T) {
 	svc, _, admin := newTestServer(t)
-	login := doForm(t, admin, "/admin/login", url.Values{"token": {testToken}}, nil)
-	c := adminCookieFrom(t, login)
+	ui := loginAdmin(t, admin)
+	c := ui.c
 	start := time.Now().Add(72 * time.Hour).UTC()
 	e, _ := svc.CreateEvent(core.EventInput{Title: "Silent", StartsAt: start, EndsAt: start.Add(time.Hour)})
 	if _, err := svc.CancelEvent(e.ID, "", "", "admin"); err != nil {

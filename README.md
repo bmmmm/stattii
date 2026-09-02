@@ -237,8 +237,12 @@ management routes. On the admin listener live:
 - **`/admin`** — a web admin (server-rendered, zero JS): every event with
   its responsible people and who clicked what, plus create / confirm /
   cancel / move / reinstate / assign, proposal decisions and outbox
-  retries. Log in once with the admin token; it is kept in an HttpOnly
-  SameSite=Strict cookie.
+  retries. Log in once with the admin token: it buys a **session**, and
+  only a random session id lives in the HttpOnly SameSite=Strict cookie —
+  the token itself never leaves the login form, so a leaked cookie is not
+  an API credential. Sessions are held in memory (a restart asks you to
+  log in again), "Log out" ends them server-side, and every mutating form
+  carries a per-session token that the server verifies.
 - **`/api/v1`** — the REST API (bearer auth) the CLI uses, including
   `GET /api/v1/overview` (rendered by `stattii overview`).
 

@@ -25,6 +25,7 @@ import (
 type Server struct {
 	svc            *core.Service
 	adminToken     string
+	sessions       *sessionStore
 	limiter        *limiter
 	loginLimiter   *limiter
 	rsvpLimiter    *limiter
@@ -40,7 +41,11 @@ func New(svc *core.Service, adminToken, calName string, trustedProxies []*net.IP
 	if calName == "" {
 		calName = "stattii"
 	}
-	return &Server{svc: svc, adminToken: adminToken, limiter: newLimiter(30, time.Minute),
+	return &Server{svc: svc, adminToken: adminToken,
+		sessions: newSessionStore(adminSessionTTL),
+		limiter:  newLimiter(30, time.Minute),
+		// A brute-force bucket for logins: the admin token is the one
+		// secret a guessing client could try to walk.
 		loginLimiter: newLimiter(5, time.Minute),
 		rsvpLimiter:  newLimiter(10, time.Minute),
 		calName:      calName, trustedProxies: trustedProxies}
