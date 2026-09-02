@@ -79,6 +79,20 @@ func TestSecretResolutionFileThenEnv(t *testing.T) {
 	}
 }
 
+func TestCalendarFetchEveryParses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"calendar_source": "https://x.local/c.ics", "calendar_fetch_every": "15m"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := loadFileConfig(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.CalendarFetchEvery != "15m" {
+		t.Fatalf("calendar_fetch_every = %q", c.CalendarFetchEvery)
+	}
+}
+
 func TestTrailingConfigContentFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"listen": ":1"} {"listen": ":2"}`), 0o600); err != nil {

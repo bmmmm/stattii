@@ -40,14 +40,17 @@ type fileConfig struct {
 	// shares one bucket. Empty = direct exposure, header ignored.
 	TrustedProxies string `json:"trusted_proxies"`
 	// Foreign ICS feed to import events from (operator data — never in
-	// the repo). webcal:// is rewritten to https://. Fetch is manual:
-	// POST /api/v1/calendar/fetch, the panel button, or `stattii
-	// calendar fetch`.
+	// the repo). webcal:// is rewritten to https://. Fetch is manual
+	// (POST /api/v1/calendar/fetch, the panel button, `stattii calendar
+	// fetch`) unless calendar_fetch_every sets a polling interval.
 	CalendarSource string `json:"calendar_source"`
 	// How far ahead recurring series are materialised (Go duration).
-	CalendarWindow string         `json:"calendar_window"`
-	Email          emailConfig    `json:"email"`
-	Telegram       telegramConfig `json:"telegram"`
+	CalendarWindow string `json:"calendar_window"`
+	// Poll the source this often (Go duration); empty = manual only.
+	// Setting it without calendar_source is a startup error.
+	CalendarFetchEvery string         `json:"calendar_fetch_every"`
+	Email              emailConfig    `json:"email"`
+	Telegram           telegramConfig `json:"telegram"`
 }
 
 type emailConfig struct {

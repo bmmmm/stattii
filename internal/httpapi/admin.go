@@ -178,11 +178,15 @@ type adminOverviewData struct {
 	Recent     []adminRecentMsg // last messages, newest first
 	Calendar   bool             // a source feed is configured
 	LastImport *core.ImportReport
+	// Vanished comes from the events' own sticky markers, not from the
+	// last report — a missing occurrence stays listed until it is back
+	// in the feed or cancelled here.
+	Vanished []core.Event
 }
 
 func (s *Server) adminOverview(w http.ResponseWriter, r *http.Request) {
 	d := adminOverviewData{Ov: s.svc.Overview(), All: r.URL.Query().Get("all") == "1", People: s.svc.People(),
-		Calendar: s.svc.CalendarConfigured(), LastImport: s.svc.LastImport()}
+		Calendar: s.svc.CalendarConfigured(), LastImport: s.svc.LastImport(), Vanished: s.svc.VanishedEvents()}
 	if !d.All {
 		now := time.Now()
 		var keep []core.OverviewEvent

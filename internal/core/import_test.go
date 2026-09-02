@@ -5,14 +5,85 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/bmmmm/stattii/internal/icsimport"
 )
+
+// stubFeed answers calendar fetches in-process — no listener, so these
+// tests run inside the sandbox.
+type stubFeed struct {
+	mu     sync.Mutex
+	status int
+	body   string
+	calls  int
+}
+
+func (f *stubFeed) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return &http.Response{
+		StatusCode: f.status, Header: http.Header{}, Request: r,
+		Body: io.NopCloser(strings.NewReader(f.body)),
+	}, nil
+}
+
+func (f *stubFeed) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *stubFeed) set(status int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status, f.body = status, body
+}
+
+func icsWith(uids ...string) string {
+	var b strings.Builder
+	b.WriteString("BEGIN:VCALENDAR\r\n")
+	for i, uid := range uids {
+		b.WriteString("BEGIN:VEVENT\r\nUID:" + uid + "\r\n")
+		day := 15 + i
+		b.WriteString("DTSTART:202608" + string(rune('0'+day/10)) + string(rune('0'+day%10)) + "T100000Z\r\n")
+		b.WriteString("DTEND:202608" + string(rune('0'+day/10)) + string(rune('0'+day%10)) + "T110000Z\r\n")
+		b.WriteString("SUMMARY:" + uid + "\r\nEND:VEVENT\r\n")
+	}
+	b.WriteString("END:VCALENDAR\r\n")
+	return b.String()
+}
+
+// newFeedService is newTestService plus a configured source served by
+// the stub and, when every > 0, the automatic fetcher armed.
+func newFeedService(t *testing.T, fake *fakeNotifier, feed *stubFeed, every time.Duration) (*Service, *time.Time) {
+	t.Helper()
+	store, err := NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(store, Config{
+		BaseURL: "http://test.local", AdminNotify: &Address{Kind: "email", To: "admin@test.local"},
+		CalendarSource: "https://feed.test/cal.ics", CalendarWindow: 60 * 24 * time.Hour,
+		CalendarFetchEvery: every,
+	}, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	clock := &now
+	svc.SetClock(func() time.Time { return *clock })
+	svc.SetCalendarClient(&http.Client{Transport: feed})
+	svc.logf = t.Logf
+	return svc, clock
+}
 
 func occ(uid, title string, start time.Time, dur time.Duration) icsimport.Occurrence {
 	return icsimport.Occurrence{
@@ -351,5 +422,222 @@ func TestImportMovesDoNotFloodAdmin(t *testing.T) {
 	}
 	if auditCount(t, svc, "propagation.empty") != 3 {
 		t.Fatal("each silent move must still be audited")
+	}
+}
+
+// A vanished occurrence is an open decision, not a line in one report:
+// the marker sticks with its first timestamp across fetches, the admin
+// is paged on the transition only, and the reminder tells the
+// responsible what happened.
+func TestVanishedIsStickyAcrossFetches(t *testing.T) {
+	fake := &fakeNotifier{}
+	feed := &stubFeed{status: 200, body: icsWith("stays", "goes")}
+	svc, clock := newFeedService(t, fake, feed, 0)
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	feed.set(200, icsWith("stays"))
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var goes Event
+	for _, e := range svc.Events() {
+		if e.SourceUID == "goes" {
+			goes = e
+		}
+	}
+	if goes.VanishedAt.IsZero() || !goes.VanishedAt.Equal(*clock) {
+		t.Fatalf("vanished marker not set on first disappearance: %+v", goes)
+	}
+	first := goes.VanishedAt
+
+	*clock = clock.Add(time.Hour)
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.EventByID(goes.ID)
+	if !got.VanishedAt.Equal(first) {
+		t.Fatalf("marker must keep its first timestamp, got %v want %v", got.VanishedAt, first)
+	}
+	if got.Status == StatusCancelled {
+		t.Fatal("a vanished event was cancelled by the import")
+	}
+	svc.Tick(*clock)
+	pages := adminMessages(fake, "Gone from the calendar")
+	if len(pages) != 1 || !strings.Contains(pages[0].Body, "goes") {
+		t.Fatalf("want exactly 1 page across 2 vanished fetches, got %d: %+v", len(pages), pages)
+	}
+	if vs := svc.VanishedEvents(); len(vs) != 1 || vs[0].ID != goes.ID {
+		t.Fatalf("VanishedEvents: %+v", vs)
+	}
+
+	// The reminder to the responsible carries the note.
+	ana := mustPerson(t, svc, "ana", TrustRespond)
+	if err := svc.Assign(goes.ID, ana.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	*clock = goes.StartsAt.Add(-40 * time.Hour)
+	svc.Tick(*clock)
+	rem := fake.byPurposeTo("ana@test.local")
+	if len(rem) != 1 || !strings.Contains(rem[0].Body, "disappeared from the source calendar") {
+		t.Fatalf("reminder lacks the vanished note: %+v", rem)
+	}
+}
+
+// An empty result is a broken feed until proven otherwise: no markers.
+func TestSuspectFetchLeavesVanishedAtUntouched(t *testing.T) {
+	fake := &fakeNotifier{}
+	feed := &stubFeed{status: 200, body: icsWith("a", "b")}
+	svc, clock := newFeedService(t, fake, feed, 0)
+	if _, err := svc.FetchCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	feed.set(200, "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n")
+	rep, err := svc.FetchCalendar(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Suspect {
+		t.Fatalf("empty feed must be suspect: %+v", rep)
+	}
+	for _, e := range svc.Events() {
+		if !e.VanishedAt.IsZero() {
+			t.Fatalf("suspect fetch set a vanished marker: %+v", e)
+		}
+	}
+	svc.Tick(*clock)
+	if len(adminMessages(fake, "Gone from the calendar")) != 0 {
+		t.Fatal("suspect fetch paged about vanished events")
+	}
+}
+
+func TestVanishedClearsOnReappear(t *testing.T) {
+	fake := &fakeNotifier{}
+	feed := &stubFeed{status: 200, body: icsWith("a", "b")}
+	svc, _ := newFeedService(t, fake, feed, 0)
+	svc.FetchCalendar(context.Background())
+	feed.set(200, icsWith("a"))
+	svc.FetchCalendar(context.Background())
+	if len(svc.VanishedEvents()) != 1 {
+		t.Fatal("setup: b should be vanished")
+	}
+	feed.set(200, icsWith("a", "b"))
+	svc.FetchCalendar(context.Background())
+	if vs := svc.VanishedEvents(); len(vs) != 0 {
+		t.Fatalf("reappeared event still marked: %+v", vs)
+	}
+	if auditCount(t, svc, "import.reappeared") != 1 {
+		t.Fatal("import.reappeared not audited once")
+	}
+}
+
+func TestCancelledEventNeverMarkedVanished(t *testing.T) {
+	fake := &fakeNotifier{}
+	feed := &stubFeed{status: 200, body: icsWith("a", "b")}
+	svc, _ := newFeedService(t, fake, feed, 0)
+	svc.FetchCalendar(context.Background())
+	var b Event
+	for _, e := range svc.Events() {
+		if e.SourceUID == "b" {
+			b = e
+		}
+	}
+	if _, err := svc.CancelEvent(b.ID, "", "off", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	feed.set(200, icsWith("a"))
+	svc.FetchCalendar(context.Background())
+	got, _ := svc.EventByID(b.ID)
+	if !got.VanishedAt.IsZero() || len(svc.VanishedEvents()) != 0 {
+		t.Fatalf("cancelled event marked vanished: %+v", got)
+	}
+}
+
+// Fetch failures page once per episode, audit every time, and announce
+// the recovery — three 500s are one problem, not three.
+func TestImportFailurePagesOncePerEpisode(t *testing.T) {
+	fake := &fakeNotifier{}
+	feed := &stubFeed{status: 500}
+	svc, clock := newFeedService(t, fake, feed, time.Hour)
+	ctx := context.Background()
+	for range 3 {
+		svc.fetchOnce(ctx)
+	}
+	svc.Tick(*clock)
+	if n := len(adminMessages(fake, "Calendar fetch failing")); n != 1 {
+		t.Fatalf("want 1 failure page for 3 failed fetches, got %d", n)
+	}
+	if auditCount(t, svc, "import.failed") != 3 {
+		t.Fatal("every failed fetch must be audited")
+	}
+	feed.set(200, icsWith("a"))
+	svc.fetchOnce(ctx)
+	svc.Tick(*clock)
+	if n := len(adminMessages(fake, "Calendar fetch recovered")); n != 1 {
+		t.Fatalf("want 1 recovery page, got %d", n)
+	}
+	if auditCount(t, svc, "import.recovered") != 1 {
+		t.Fatal("recovery not audited")
+	}
+	// A new episode pages again.
+	feed.set(500, "")
+	svc.fetchOnce(ctx)
+	svc.Tick(*clock)
+	if n := len(adminMessages(fake, "Calendar fetch failing")); n != 2 {
+		t.Fatalf("second episode not paged: %d", n)
+	}
+}
+
+// Shutdown mid-fetch is not a failure: no audit, no page, and the loop
+// returns.
+func TestCalendarFetcherStopsOnContextCancel(t *testing.T) {
+	fake := &fakeNotifier{}
+	feed := &stubFeed{status: 200, body: icsWith("a")}
+	svc, _ := newFeedService(t, fake, feed, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		svc.RunCalendarFetcher(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fetcher did not stop on a cancelled context")
+	}
+	if auditCount(t, svc, "import.failed") != 0 {
+		t.Fatal("a cancelled context was booked as a fetch failure")
+	}
+	if len(svc.OutboxItems(true)) != 0 {
+		t.Fatal("a cancelled context paged the admin")
+	}
+
+	// And an unarmed fetcher (no interval) returns at once, without a
+	// single request.
+	feed2 := &stubFeed{status: 200, body: icsWith("a")}
+	svc2, _ := newFeedService(t, fake, feed2, 0)
+	done2 := make(chan struct{})
+	go func() {
+		svc2.RunCalendarFetcher(context.Background())
+		close(done2)
+	}()
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fetcher without interval did not return")
+	}
+	if feed2.count() != 0 {
+		t.Fatal("fetcher without interval fetched")
+	}
+}
+
+func TestFetchEveryRequiresSource(t *testing.T) {
+	store, err := NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewService(store, Config{CalendarFetchEvery: time.Hour}, &fakeNotifier{}); err == nil {
+		t.Fatal("calendar_fetch_every without calendar_source must be refused")
 	}
 }

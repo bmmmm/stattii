@@ -40,9 +40,19 @@ type Config struct {
 	OutboxRetention time.Duration
 	AdminNotify     *Address // where escalations and proposals go (optional)
 	// Calendar import (optional): the foreign ICS feed events come from,
-	// and how far ahead occurrences are materialised.
-	CalendarSource string
-	CalendarWindow time.Duration
+	// how far ahead occurrences are materialised, and how often the
+	// fetcher polls by itself (zero = manual only).
+	CalendarSource     string
+	CalendarWindow     time.Duration
+	CalendarFetchEvery time.Duration
+}
+
+// validate rejects combinations that would silently do nothing.
+func (c *Config) validate() error {
+	if c.CalendarFetchEvery > 0 && c.CalendarSource == "" {
+		return errors.New("calendar_fetch_every is set but calendar_source is empty — nothing to fetch")
+	}
+	return nil
 }
 
 func (c *Config) fill() {
@@ -85,10 +95,17 @@ type Service struct {
 	// via PersistHealthy → /healthz.
 	saveFailed  bool
 	auditFailed bool
+	// importFailed: the automatic calendar fetch is in a failure episode
+	// — paged once on the way in, once on the way out. In-memory only;
+	// a restart is a fresh episode.
+	importFailed bool
 }
 
 func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {
 	cfg.fill()
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 	st, err := store.Load()
 	if err != nil {
 		return nil, err
@@ -108,6 +125,15 @@ func (s *Service) SetClock(now func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.now = now
+}
+
+// clock reads the time under the lock — for the few code paths that run
+// outside it (the calendar fetch's HTTP round-trip) and must not race
+// SetClock.
+func (s *Service) clock() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.now()
 }
 
 // NoteLoginFailure records a failed admin-UI login in the audit trail —

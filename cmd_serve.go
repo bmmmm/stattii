@@ -126,6 +126,11 @@ func cmdServe(args []string) {
 	if fc.CalendarWindow != "" {
 		cfg.CalendarWindow = parseDur("calendar_window", fc.CalendarWindow)
 	}
+	if fc.CalendarFetchEvery != "" {
+		// Set without a source is a config error, not a silent no-op —
+		// core.NewService refuses it (fatal below like every other typo).
+		cfg.CalendarFetchEvery = parseDur("calendar_fetch_every", fc.CalendarFetchEvery)
+	}
 
 	tgToken := fc.telegramToken()
 	registry := channel.NewRegistry(
@@ -186,6 +191,13 @@ func cmdServe(args []string) {
 	go func() {
 		defer bg.Done()
 		svc.RunScheduler(ctx, *tickEvery)
+	}()
+	// The calendar fetcher is a no-op unless calendar_fetch_every is set;
+	// it joins the same drain so a sync in flight finishes its persist.
+	bg.Add(1)
+	go func() {
+		defer bg.Done()
+		svc.RunCalendarFetcher(ctx)
 	}()
 	if tgToken != "" {
 		poller := &channel.TelegramPoller{

@@ -50,11 +50,15 @@
 
   // Foreign ICS calendar to import events from (Nextcloud public link,
   // webcal:// or https://). Operator data — keep it out of any repo.
-  // Fetch is manual: the panel button, `stattii calendar fetch`, or
-  // POST /api/v1/calendar/fetch. Recurring series are expanded this far
-  // ahead (calendar_window, Go duration; default 1440h = 60 days).
+  // Fetch is manual — the panel button, `stattii calendar fetch`, or
+  // POST /api/v1/calendar/fetch — unless calendar_fetch_every sets a
+  // polling interval (e.g. "15m"; each fetch is bounded by the HTTP
+  // client's 30s timeout; failures page the admin once per episode).
+  // Recurring series are expanded this far ahead (calendar_window, Go
+  // duration; default 1440h = 60 days).
   "calendar_source": "",
   "calendar_window": "1440h",
+  "calendar_fetch_every": "",
 
   // Reverse proxies in front of stattii (comma-separated CIDRs or IPs).
   // When the TCP peer matches, the rate limiter takes the client IP from

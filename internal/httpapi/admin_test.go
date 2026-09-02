@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bmmmm/stattii/internal/core"
+	"github.com/bmmmm/stattii/internal/icsimport"
 )
 
 func doForm(t *testing.T, h http.Handler, path string, form url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -131,6 +132,29 @@ func TestAdminLoginThrottledAndAudited(t *testing.T) {
 		}
 	}
 	t.Fatal("no admin.login_failed audit entry")
+}
+
+// A vanished occurrence stays on the overview across fetches — it is an
+// open decision, not a line in the last report.
+func TestAdminOverviewKeepsVanishedAcrossFetches(t *testing.T) {
+	svc, _, admin := newTestServer(t)
+	login := doForm(t, admin, "/admin/login", url.Values{"token": {testToken}}, nil)
+	c := adminCookieFrom(t, login)
+	now := time.Now()
+	until := now.Add(60 * 24 * time.Hour)
+	a := icsimport.Occurrence{Key: "a/1", UID: "a", Summary: "Stays", Start: now.Add(48 * time.Hour), End: now.Add(49 * time.Hour)}
+	b := icsimport.Occurrence{Key: "b/1", UID: "b", Summary: "Disappears", Start: now.Add(72 * time.Hour), End: now.Add(73 * time.Hour)}
+	svc.SyncCalendar([]icsimport.Occurrence{a, b}, nil, until)
+	svc.SyncCalendar([]icsimport.Occurrence{a}, nil, until)
+	svc.SyncCalendar([]icsimport.Occurrence{a}, nil, until) // second fetch without b
+	req := httptest.NewRequest("GET", "/admin", nil)
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	admin.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, "Gone from the calendar") || !strings.Contains(body, "Disappears") {
+		t.Fatalf("vanished event missing from the overview: %d\n%s", rec.Code, body)
+	}
 }
 
 // A cancellation that reached nobody must be visible on the event page —

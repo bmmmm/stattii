@@ -279,6 +279,11 @@ func (s *Service) tickRemindersLocked(now time.Time) bool {
 			if e.Location != "" {
 				header += "\nLocation: " + e.Location
 			}
+			if !e.VanishedAt.IsZero() {
+				// The responsible is the one person who knows whether a
+				// missing feed entry means "off" or "feed glitch".
+				header += "\n\nNote: this entry has disappeared from the source calendar. If it is off, click NO."
+			}
 			body := fmt.Sprintf(
 				"%s\n\nWill it take place?\nYES, confirm:  %s\nNO, cancel it: %s\n\nThese links are personal — please do not forward.",
 				header, s.actionURL(cTok), s.actionURL(xTok))

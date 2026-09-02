@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,10 +81,39 @@ func (s *Service) FetchCalendar(ctx context.Context) (ImportReport, error) {
 	}
 
 	events, skParse := icsimport.Parse(raw)
-	now := s.now()
+	now := s.clock()
 	until := now.Add(s.cfg.CalendarWindow)
 	occs, skExpand := icsimport.Expand(events, now.Add(-24*time.Hour), until)
 	return s.SyncCalendar(occs, append(skParse, skExpand...), until), nil
+}
+
+// noteImportResultLocked books the outcome of an automatic fetch: every
+// failure is audited, the admin is paged once per failure episode (the
+// healthy→failed transition) and once on recovery. Shutdown is not a
+// failure. Returns whether anything was enqueued.
+func (s *Service) noteImportResultLocked(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if err != nil {
+		s.auditLocked("import.failed", map[string]any{"error": err.Error()})
+		if s.importFailed {
+			return false
+		}
+		s.importFailed = true
+		s.notifyAdminLocked("Calendar fetch failing",
+			fmt.Sprintf("The automatic calendar fetch failed: %v\n\n"+
+				"Events keep their last imported state — nothing is cancelled by this. "+
+				"Check the source URL and the network; this pages again only after a recovery.", err))
+		return true
+	}
+	if !s.importFailed {
+		return false
+	}
+	s.importFailed = false
+	s.auditLocked("import.recovered", map[string]any{})
+	s.notifyAdminLocked("Calendar fetch recovered", "The automatic calendar fetch works again.")
+	return true
 }
 
 // SetCalendarClient overrides the HTTP client used for feed fetches (tests).
@@ -148,6 +178,13 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 			}
 			continue
 		}
+		if !e.VanishedAt.IsZero() {
+			// Back in the feed: the glitch (or the operator's fix) is
+			// over. On a suspect fetch this loop never runs, so the
+			// marker survives exactly the fetches it must not trust.
+			e.VanishedAt = time.Time{}
+			s.auditLocked("import.reappeared", map[string]any{"event_id": e.ID, "title": e.Title})
+		}
 		if !e.StartsAt.Equal(o.Start) {
 			// No note: the move body never carries it, and a non-empty
 			// note would overwrite what the operator wrote on the event.
@@ -184,6 +221,7 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 		rep.Unchanged++
 	}
 
+	var gone []*Event
 	for i := range s.state.Events {
 		e := &s.state.Events[i]
 		if e.SourceKey == "" || seen[e.SourceKey] || e.Status == StatusCancelled {
@@ -205,6 +243,27 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 		rep.Vanished = append(rep.Vanished,
 			fmt.Sprintf("%s (%s)", e.Title, e.StartsAt.Format("Mon, 02 Jan 15:04")))
 		s.auditLocked("import.vanished", map[string]any{"event_id": e.ID, "title": e.Title})
+		if e.VanishedAt.IsZero() {
+			e.VanishedAt = rep.FetchedAt
+			gone = append(gone, e)
+		}
+	}
+	if len(gone) > 0 {
+		// One page per fetch, on the transition only: a still-missing
+		// event is the same fact as last time, not news.
+		lines := make([]string, 0, len(gone))
+		for _, e := range gone {
+			line := fmt.Sprintf("- %s (%s)", e.Title, e.StartsAt.Format(timeFmt))
+			if e.IfUnconfirmed == "cancel" {
+				line += " — WILL auto-cancel at its deadline unless you act"
+			}
+			lines = append(lines, line)
+		}
+		s.notifyAdminLocked(fmt.Sprintf("Gone from the calendar: %d event(s)", len(gone)),
+			"These events are no longer in the source calendar. stattii has NOT cancelled them — a feed glitch must never send cancellation mail.\n"+
+				strings.Join(lines, "\n")+
+				"\n\nIf they are really off, cancel them in the panel (that sends the notices). If the feed is wrong, fix the feed — they clear on the next fetch. "+
+				"Until then their reminders go out as usual, with a note that the entry disappeared.")
 	}
 
 	if len(rep.Silent) > 0 {
@@ -244,6 +303,25 @@ func (s *Service) LastImport() *ImportReport {
 
 // CalendarConfigured reports whether a source feed is set.
 func (s *Service) CalendarConfigured() bool { return s.cfg.CalendarSource != "" }
+
+// VanishedEvents lists the imported events currently missing from the
+// source and still ahead: the operator's open decisions. Cancelling one
+// in the panel is the dismissal — the notices go out, the row goes away.
+func (s *Service) VanishedEvents() []Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	var out []Event
+	for i := range s.state.Events {
+		e := &s.state.Events[i]
+		if e.VanishedAt.IsZero() || e.Status == StatusCancelled || eventExpiry(e).Before(now) {
+			continue
+		}
+		out = append(out, *e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
+	return out
+}
 
 func (s *Service) eventBySourceKeyLocked(key string) *Event {
 	for i := range s.state.Events {

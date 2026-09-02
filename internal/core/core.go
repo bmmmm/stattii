@@ -66,6 +66,11 @@ type Event struct {
 	// and the stable per-occurrence key the sync matches on.
 	SourceUID string `json:"source_uid,omitempty"`
 	SourceKey string `json:"source_key,omitempty"`
+	// VanishedAt: since when the occurrence has been missing from the
+	// source feed. Sticky across fetches (the admin is paged once, on
+	// the transition), cleared when it reappears, never a cancellation
+	// by itself — invariant 9.
+	VanishedAt time.Time `json:"vanished_at,omitzero"`
 }
 
 // EventInput is the validated payload for creating an event.

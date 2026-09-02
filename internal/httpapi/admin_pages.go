@@ -43,15 +43,15 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 
 {{if .Calendar}}
 <p><form method="post" action="/admin/calendar/fetch"><button class="yes" type="submit">Fetch calendar now</button></form>
-{{with .LastImport}}<span class="muted">last fetch {{.FetchedAt.Format "02 Jan 15:04"}} — {{.Created}} new · {{.Moved}} moved · {{.Updated}} updated · {{.Unchanged}} unchanged</span>{{end}}</p>
+{{with .LastImport}}<span class="muted">last fetch {{.FetchedAt.Format "02 Jan 15:04"}} — {{.Created}} new · {{.Moved}} moved · {{.Updated}} updated · {{.Unchanged}} unchanged{{if .Vanished}} · {{len .Vanished}} missing{{end}}</span>{{end}}</p>
 {{end}}
 
 {{$imp := .LastImport}}
-{{if or .Proposals .Pending (and $imp (or $imp.Vanished $imp.Conflicts $imp.Skipped $imp.Silent))}}
+{{if or .Proposals .Pending .Vanished (and $imp (or $imp.Conflicts $imp.Skipped $imp.Silent))}}
 <div class="card">
 <h2>Needs attention</h2>
+{{range .Vanished}}<p class="bad">Gone from the calendar since {{.VanishedAt.Format "02 Jan 15:04"}} (NOT auto-cancelled — <a href="/admin/event/{{.ID}}">cancel it yourself</a> if real{{if eq .IfUnconfirmed "cancel"}}; WILL auto-cancel at its deadline{{end}}): {{.Title}} · {{.StartsAt.Format "Mon, 02 Jan 15:04"}}</p>{{end}}
 {{if $imp}}
-{{range $imp.Vanished}}<p class="bad">Gone from the calendar (NOT auto-cancelled — cancel it yourself if real): {{.}}</p>{{end}}
 {{range $imp.Silent}}<p class="bad">Moved by the source but nobody was told (no broadcast, no reachable responsible, no guest with an address): {{.}}</p>{{end}}
 {{range $imp.Conflicts}}<p class="bad">Import conflict: {{.}}</p>{{end}}
 {{range $imp.Skipped}}<p class="muted">Import skipped: {{.}}</p>{{end}}
