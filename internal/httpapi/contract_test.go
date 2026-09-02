@@ -51,6 +51,19 @@ func TestAdminAPIContract(t *testing.T) {
 	step(200, "GET", "/api/v1/people", "")
 	step(200, "POST", "/api/v1/people/"+created.Person.ID+"/test-message", "")
 	step(404, "POST", "/api/v1/people/pe_nope/test-message", "")
+	// PATCH is a patch: the name changes, the (non-empty!) channel list
+	// is replaced, trust stays — the rest of the walk relies on ana
+	// being reachable.
+	var patched core.Person
+	w = do(t, h, "PATCH", "/api/v1/people/"+created.Person.ID, testToken,
+		`{"name":"Ana","channels":[{"kind":"email","to":"ana@x.local"},{"kind":"telegram","to":"7"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("patch person: %d %s", w.Code, w.Body)
+	}
+	decode(t, w.Body.String(), &patched)
+	if patched.Name != "Ana" || patched.Trust != core.TrustRespond || len(patched.Channels) != 2 {
+		t.Fatalf("patch payload: %+v", patched)
+	}
 
 	// events: create → list → get → 404 for unknown
 	start := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
@@ -207,6 +220,15 @@ func TestAdminAPIContract(t *testing.T) {
 		t.Fatalf("rotate payload: %v (old %s)", rotated, created.PortalURL)
 	}
 	step(404, "POST", "/api/v1/people/pe_nope/rotate-portal", "")
+
+	// unassign: one event, then the series row; both 404 on repeat.
+	step(200, "DELETE", "/api/v1/events/"+ev.ID+"/assignees/"+created.Person.ID, "")
+	step(404, "DELETE", "/api/v1/events/"+ev.ID+"/assignees/"+created.Person.ID, "")
+	step(200, "DELETE", "/api/v1/series-assignments?source_uid=some-series&person_id="+created.Person.ID, "")
+	step(404, "DELETE", "/api/v1/series-assignments?source_uid=some-series&person_id="+created.Person.ID, "")
+	step(400, "DELETE", "/api/v1/series-assignments?source_uid=some-series", "")
+	step(404, "PATCH", "/api/v1/people/pe_nope", `{"name":"x"}`)
+	step(400, "PATCH", "/api/v1/people/"+created.Person.ID, `{"trust":"boss"}`)
 
 	// audit + overview
 	step(200, "GET", "/api/v1/audit?limit=5", "")

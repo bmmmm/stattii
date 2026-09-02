@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bmmmm/stattii/internal/core"
@@ -32,12 +33,14 @@ func (s *Server) registerAdminUI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/event/{id}/reinstate", s.adminAuth(s.adminEventReinstate))
 	mux.HandleFunc("POST /admin/event/{id}/move", s.adminAuth(s.adminEventMove))
 	mux.HandleFunc("POST /admin/event/{id}/assign", s.adminAuth(s.adminEventAssign))
+	mux.HandleFunc("POST /admin/event/{id}/unassign", s.adminAuth(s.adminEventUnassign))
 	mux.HandleFunc("POST /admin/event/{id}/invite", s.adminAuth(s.adminInviteCreate))
 	mux.HandleFunc("POST /admin/event/{id}/invite/revoke", s.adminAuth(s.adminInviteRevoke))
 	mux.HandleFunc("POST /admin/event/{id}/guests/{gid}/remove", s.adminAuth(s.adminGuestRemove))
 	mux.HandleFunc("POST /admin/events", s.adminAuth(s.adminEventCreate))
 	mux.HandleFunc("GET /admin/people", s.adminAuth(s.adminPeople))
 	mux.HandleFunc("POST /admin/people", s.adminAuth(s.adminPeopleAdd))
+	mux.HandleFunc("POST /admin/people/{id}/edit", s.adminAuth(s.adminPeopleEdit))
 	mux.HandleFunc("POST /admin/people/{id}/test", s.adminAuth(s.adminPeopleTest))
 	mux.HandleFunc("POST /admin/people/{id}/rotate-portal", s.adminAuth(s.adminRotatePortal))
 	mux.HandleFunc("POST /admin/event/{id}/links/revoke", s.adminAuth(s.adminEventRevokeLinks))
@@ -359,6 +362,22 @@ func (s *Server) adminEventAssign(w http.ResponseWriter, r *http.Request) {
 	s.adminAct(w, r, s.svc.Assign(r.PathValue("id"), r.FormValue("person_id"), r.FormValue("role")))
 }
 
+// adminEventUnassign mirrors adminEventAssign: "series" removes the
+// person from the whole imported series (future occurrences only).
+func (s *Server) adminEventUnassign(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("series") == "1" {
+		e, err := s.svc.EventByID(r.PathValue("id"))
+		if err != nil || e.SourceUID == "" {
+			s.renderAdminError(w, core.ErrNotFound)
+			return
+		}
+		_, err = s.svc.UnassignSeries(e.SourceUID, r.FormValue("person_id"))
+		s.adminAct(w, r, err)
+		return
+	}
+	s.adminAct(w, r, s.svc.Unassign(r.PathValue("id"), r.FormValue("person_id")))
+}
+
 func (s *Server) adminRotatePortal(w http.ResponseWriter, r *http.Request) {
 	_, err := s.svc.RotatePortal(r.PathValue("id"))
 	s.redirectOr(w, r, err, "/admin/people")
@@ -414,6 +433,10 @@ type adminPerson struct {
 	PortalURL string
 	LastMsg   string // most recent message to this person, any event
 	LastBad   bool
+	// Email/Telegram prefill the two-field edit form; Other counts the
+	// channels that form cannot show (webhooks) and keeps on save.
+	Email, Telegram string
+	Other           int
 }
 
 func (s *Server) adminPeople(w http.ResponseWriter, r *http.Request) {
@@ -430,6 +453,16 @@ func (s *Server) adminPeople(w http.ResponseWriter, r *http.Request) {
 	for _, p := range s.svc.People() {
 		u, _ := s.svc.PersonPortalURL(p.ID)
 		ap := adminPerson{Person: p, PortalURL: u}
+		for _, ch := range p.Channels {
+			switch {
+			case ch.Kind == "email" && ap.Email == "":
+				ap.Email = ch.To
+			case ch.Kind == "telegram" && ap.Telegram == "":
+				ap.Telegram = ch.To
+			default:
+				ap.Other++
+			}
+		}
 		if last := latest[p.ID]; last != nil {
 			switch s.svc.OutboxState(*last) {
 			case "delivered":
@@ -465,6 +498,50 @@ func (s *Server) adminPeopleAdd(w http.ResponseWriter, r *http.Request) {
 		channels = append(channels, core.Address{Kind: "telegram", To: v})
 	}
 	_, err := s.svc.AddPerson(r.FormValue("name"), core.TrustLevel(r.FormValue("trust")), channels)
+	s.redirectOr(w, r, err, "/admin/people")
+}
+
+// adminPeopleEdit is the two-field form's save. The form shows one email
+// and one telegram address; the person may hold more (a second email, a
+// webhook). Those ride along untouched — a form that cannot display a
+// channel must not silently delete it.
+func (s *Server) adminPeopleEdit(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var current *core.Person
+	for _, p := range s.svc.People() {
+		if p.ID == id {
+			current = &p
+			break
+		}
+	}
+	if current == nil {
+		s.renderAdminError(w, core.ErrNotFound)
+		return
+	}
+	var channels []core.Address
+	if v := strings.TrimSpace(r.FormValue("email")); v != "" {
+		channels = append(channels, core.Address{Kind: "email", To: v})
+	}
+	if v := strings.TrimSpace(r.FormValue("telegram")); v != "" {
+		channels = append(channels, core.Address{Kind: "telegram", To: v})
+	}
+	seenEmail, seenTelegram := false, false
+	for _, ch := range current.Channels {
+		switch {
+		case ch.Kind == "email" && !seenEmail:
+			seenEmail = true // the form's slot — replaced above
+		case ch.Kind == "telegram" && !seenTelegram:
+			seenTelegram = true
+		default:
+			channels = append(channels, ch)
+		}
+	}
+	if channels == nil {
+		channels = []core.Address{}
+	}
+	name := r.FormValue("name")
+	trust := core.TrustLevel(r.FormValue("trust"))
+	_, err := s.svc.UpdatePerson(id, core.PersonUpdate{Name: &name, Trust: &trust, Channels: &channels})
 	s.redirectOr(w, r, err, "/admin/people")
 }
 

@@ -115,13 +115,15 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{if not .Ev.Reachable}}<p class="muted">nobody reachable — the reminder waits, the deadline does not</p>{{end}}
 {{range .Tracks}}
   <p><strong>{{.A.Name}}</strong>{{if .A.Role}} ({{.A.Role}}){{end}} <span class="muted">· trust: {{.A.Trust}}{{if not .A.Reachable}} · <span class="bad">no channel</span>{{end}}</span>
-  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/links/revoke"><input type="hidden" name="person_id" value="{{.A.PersonID}}"><button type="submit">Revoke links</button></form></p>
+  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/links/revoke"><input type="hidden" name="person_id" value="{{.A.PersonID}}"><button type="submit">Revoke links</button></form>
+  <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/unassign"><input type="hidden" name="person_id" value="{{.A.PersonID}}">{{if $.Ev.Event.SourceUID}}<label><input type="checkbox" name="series" value="1"> whole series</label> {{end}}<button type="submit">Unassign</button></form></p>
   <ul class="tl">
   {{range .Entries}}<li class="{{if .Bad}}bad{{else if .Muted}}muted{{end}}">{{.At.Format "02 Jan 15:04"}}&nbsp; {{.Icon}} {{.Text}}</li>
   {{else}}<li class="muted">nothing sent yet — the reminder goes out {{$.Ev.Event.StartsAt.Format "02 Jan"}} minus the reminder lead</li>{{end}}
   {{if not .A.Action}}<li class="muted">… no answer yet</li>{{end}}
   </ul>
 {{end}}
+{{if .Tracks}}<p class="muted">Unassign removes them from this occurrence and kills their links; tick "whole series" for every future occurrence too. With nobody reachable left, the deadline fires without an ask.</p>{{end}}
 </div>
 
 <div class="card">
@@ -209,6 +211,16 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
   <p class="muted">Portal: <a href="{{.PortalURL}}">{{.PortalURL}}</a></p>
   <form method="post" action="/admin/people/{{.ID}}/test"><button type="submit">Send test message</button></form>
   <form method="post" action="/admin/people/{{.ID}}/rotate-portal"><button type="submit">Rotate portal link</button></form>
+  <details><summary>Edit</summary>
+  <form method="post" action="/admin/people/{{.ID}}/edit">
+    <label>Name <input name="name" value="{{.Name}}" required></label>
+    <label>Trust <select name="trust"><option{{if eq .Trust "respond"}} selected{{end}}>respond</option><option{{if eq .Trust "propose"}} selected{{end}}>propose</option><option{{if eq .Trust "direct"}} selected{{end}}>direct</option></select></label>
+    <label>Email <input name="email" type="email" value="{{.Email}}"></label>
+    <label>Telegram chat id <input name="telegram" value="{{.Telegram}}"></label>
+    <button class="yes" type="submit">Save</button>
+  </form>
+  <p class="muted">Blank a field to drop that channel{{if .Other}}; {{.Other}} other channel(s) not shown here stay as they are{{end}}. Links and portal stay valid — a changed address is not a new person.</p>
+  </details>
 </div>
 {{end}}
 

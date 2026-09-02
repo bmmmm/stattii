@@ -75,6 +75,16 @@ func (s *Service) RevokeLinks(eventID, personID string) (int, error) {
 	if personID != "" && s.state.Person(personID) == nil {
 		return 0, ErrNotFound
 	}
+	n := s.revokeLinksLocked(eventID, personID)
+	if n > 0 {
+		s.saveLocked()
+	}
+	return n, nil
+}
+
+// revokeLinksLocked is RevokeLinks without the lock and the id checks —
+// shared with Unassign, which already holds the mutex.
+func (s *Service) revokeLinksLocked(eventID, personID string) int {
 	n := 0
 	for i := range s.state.Links {
 		l := &s.state.Links[i]
@@ -92,9 +102,8 @@ func (s *Service) RevokeLinks(eventID, personID string) (int, error) {
 	}
 	if n > 0 {
 		s.auditLocked("links.revoked", map[string]any{"event_id": eventID, "person_id": personID, "count": n})
-		s.saveLocked()
 	}
-	return n, nil
+	return n
 }
 
 func (s *Service) actionURL(token string) string { return s.cfg.BaseURL + "/a/" + token }

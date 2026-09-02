@@ -102,42 +102,45 @@ func (s *Server) PublicHandler() http.Handler {
 func (s *Server) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
 	api := map[string]http.HandlerFunc{
-		"GET /api/v1/events":                      s.listEvents,
-		"POST /api/v1/events":                     s.createEvent,
-		"GET /api/v1/events/{id}":                 s.getEvent,
-		"POST /api/v1/events/{id}/confirm":        s.confirmEvent,
-		"POST /api/v1/events/{id}/cancel":         s.cancelEvent,
-		"POST /api/v1/events/{id}/move":           s.moveEvent,
-		"POST /api/v1/events/{id}/reinstate":      s.reinstateEvent,
-		"GET /api/v1/outbox":                      s.listOutbox,
-		"POST /api/v1/outbox/{id}/retry":          s.retryOutbox,
-		"POST /api/v1/events/{id}/links":          s.makeLinks,
-		"GET /api/v1/events/{id}/responses":       s.eventResponses,
-		"GET /api/v1/events/{id}/propagation":     s.propagation,
-		"POST /api/v1/events/{id}/invite":         s.createInvite,
-		"DELETE /api/v1/events/{id}/invite":       s.revokeInvite,
-		"GET /api/v1/events/{id}/guests":          s.listGuests,
-		"DELETE /api/v1/events/{id}/guests/{gid}": s.removeGuest,
-		"GET /api/v1/people":                      s.listPeople,
-		"POST /api/v1/people":                     s.createPerson,
-		"POST /api/v1/people/{id}/test-message":   s.testMessage,
-		"POST /api/v1/people/{id}/rotate-portal":  s.rotatePortal,
-		"DELETE /api/v1/people/{id}/links":        s.revokePersonLinks,
-		"DELETE /api/v1/events/{id}/links":        s.revokeEventLinks,
-		"POST /api/v1/assignments":                s.assign,
-		"GET /api/v1/proposals":                   s.listProposals,
-		"POST /api/v1/proposals/{id}/decide":      s.decideProposal,
-		"GET /api/v1/broadcasts":                  s.listBroadcasts,
-		"POST /api/v1/broadcasts":                 s.createBroadcast,
-		"DELETE /api/v1/broadcasts/{id}":          s.deleteBroadcast,
-		"GET /api/v1/webhooks":                    s.listWebhooks,
-		"POST /api/v1/webhooks":                   s.createWebhook,
-		"DELETE /api/v1/webhooks/{id}":            s.deleteWebhook,
-		"GET /api/v1/audit":                       s.audit,
-		"GET /api/v1/overview":                    s.overview,
-		"POST /api/v1/tick":                       s.tick,
-		"POST /api/v1/calendar/fetch":             s.calendarFetch,
-		"POST /api/v1/series-assignments":         s.createSeriesAssignment,
+		"GET /api/v1/events":                         s.listEvents,
+		"POST /api/v1/events":                        s.createEvent,
+		"GET /api/v1/events/{id}":                    s.getEvent,
+		"POST /api/v1/events/{id}/confirm":           s.confirmEvent,
+		"POST /api/v1/events/{id}/cancel":            s.cancelEvent,
+		"POST /api/v1/events/{id}/move":              s.moveEvent,
+		"POST /api/v1/events/{id}/reinstate":         s.reinstateEvent,
+		"GET /api/v1/outbox":                         s.listOutbox,
+		"POST /api/v1/outbox/{id}/retry":             s.retryOutbox,
+		"POST /api/v1/events/{id}/links":             s.makeLinks,
+		"GET /api/v1/events/{id}/responses":          s.eventResponses,
+		"GET /api/v1/events/{id}/propagation":        s.propagation,
+		"POST /api/v1/events/{id}/invite":            s.createInvite,
+		"DELETE /api/v1/events/{id}/invite":          s.revokeInvite,
+		"GET /api/v1/events/{id}/guests":             s.listGuests,
+		"DELETE /api/v1/events/{id}/guests/{gid}":    s.removeGuest,
+		"GET /api/v1/people":                         s.listPeople,
+		"POST /api/v1/people":                        s.createPerson,
+		"PATCH /api/v1/people/{id}":                  s.updatePerson,
+		"DELETE /api/v1/events/{id}/assignees/{pid}": s.unassign,
+		"DELETE /api/v1/series-assignments":          s.deleteSeriesAssignment,
+		"POST /api/v1/people/{id}/test-message":      s.testMessage,
+		"POST /api/v1/people/{id}/rotate-portal":     s.rotatePortal,
+		"DELETE /api/v1/people/{id}/links":           s.revokePersonLinks,
+		"DELETE /api/v1/events/{id}/links":           s.revokeEventLinks,
+		"POST /api/v1/assignments":                   s.assign,
+		"GET /api/v1/proposals":                      s.listProposals,
+		"POST /api/v1/proposals/{id}/decide":         s.decideProposal,
+		"GET /api/v1/broadcasts":                     s.listBroadcasts,
+		"POST /api/v1/broadcasts":                    s.createBroadcast,
+		"DELETE /api/v1/broadcasts/{id}":             s.deleteBroadcast,
+		"GET /api/v1/webhooks":                       s.listWebhooks,
+		"POST /api/v1/webhooks":                      s.createWebhook,
+		"DELETE /api/v1/webhooks/{id}":               s.deleteWebhook,
+		"GET /api/v1/audit":                          s.audit,
+		"GET /api/v1/overview":                       s.overview,
+		"POST /api/v1/tick":                          s.tick,
+		"POST /api/v1/calendar/fetch":                s.calendarFetch,
+		"POST /api/v1/series-assignments":            s.createSeriesAssignment,
 	}
 	for pattern, h := range api {
 		mux.HandleFunc(pattern, s.auth(h))
@@ -518,6 +521,21 @@ func (s *Server) createPerson(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"person": p, "portal_url": portal})
 }
 
+// updatePerson is a patch: absent keys stay, `"channels": []` clears.
+func (s *Server) updatePerson(w http.ResponseWriter, r *http.Request) {
+	var in core.PersonUpdate
+	if !readJSON(w, r, &in) {
+		return
+	}
+	p, err := s.svc.UpdatePerson(r.PathValue("id"), in)
+	respond(w, p, err, http.StatusOK)
+}
+
+func (s *Server) unassign(w http.ResponseWriter, r *http.Request) {
+	respond(w, map[string]string{"status": "unassigned"},
+		s.svc.Unassign(r.PathValue("id"), r.PathValue("pid")), http.StatusOK)
+}
+
 func (s *Server) testMessage(w http.ResponseWriter, r *http.Request) {
 	items, err := s.svc.SendTest(r.PathValue("id"))
 	respond(w, items, err, http.StatusOK)
@@ -629,6 +647,18 @@ func (s *Server) createSeriesAssignment(w http.ResponseWriter, r *http.Request) 
 	}
 	n, err := s.svc.AssignSeries(in.SourceUID, in.PersonID, in.Role)
 	respond(w, map[string]any{"status": "assigned", "events": n}, err, http.StatusOK)
+}
+
+// deleteSeriesAssignment takes its keys as query parameters — a DELETE
+// with a body is a coin toss across proxies and clients.
+func (s *Server) deleteSeriesAssignment(w http.ResponseWriter, r *http.Request) {
+	uid, pid := r.URL.Query().Get("source_uid"), r.URL.Query().Get("person_id")
+	if uid == "" || pid == "" {
+		jsonError(w, http.StatusBadRequest, "source_uid and person_id are required")
+		return
+	}
+	n, err := s.svc.UnassignSeries(uid, pid)
+	respond(w, map[string]any{"status": "unassigned", "events": n}, err, http.StatusOK)
 }
 
 func (s *Server) tick(w http.ResponseWriter, _ *http.Request) {

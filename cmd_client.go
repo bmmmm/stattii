@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -140,6 +141,17 @@ func cmdClient(args []string) error {
 			role = rest[2]
 		}
 		return api("POST", "/api/v1/assignments", map[string]string{"event_id": rest[0], "person_id": rest[1], "role": role})
+	case "unassign":
+		if len(rest) < 2 {
+			return fmt.Errorf("usage: stattii unassign <event-id> <person-id>")
+		}
+		return api("DELETE", "/api/v1/events/"+rest[0]+"/assignees/"+rest[1], nil)
+	case "series-unassign":
+		if len(rest) < 2 {
+			return fmt.Errorf("usage: stattii series-unassign <source-uid> <person-id>")
+		}
+		q := url.Values{"source_uid": {rest[0]}, "person_id": {rest[1]}}
+		return api("DELETE", "/api/v1/series-assignments?"+q.Encode(), nil)
 	case "broadcast":
 		return cmdBroadcast(rest)
 	case "webhook":
@@ -281,9 +293,45 @@ func cmdEvent(args []string) error {
 
 func cmdPerson(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii person list|add|test|rotate-portal")
+		return fmt.Errorf("usage: stattii person list|add|set|test|rotate-portal")
 	}
 	switch args[0] {
+	case "set":
+		// A patch: only flags actually given are sent, so `--name` alone
+		// does not reset trust or wipe the channels. The two channel flags
+		// together REPLACE the list (`--email ""` alone clears it).
+		if len(args) < 2 {
+			return fmt.Errorf("usage: stattii person set <person-id> [--name ...] [--trust ...] [--email ...] [--telegram ...]")
+		}
+		fs := flag.NewFlagSet("person set", flag.ExitOnError)
+		name := fs.String("name", "", "new name")
+		trust := fs.String("trust", "", "respond | propose | direct")
+		email := fs.String("email", "", "email address (empty drops it)")
+		telegram := fs.String("telegram", "", "telegram chat id (empty drops it)")
+		fs.Parse(args[2:])
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		patch := map[string]any{}
+		if set["name"] {
+			patch["name"] = *name
+		}
+		if set["trust"] {
+			patch["trust"] = *trust
+		}
+		if set["email"] || set["telegram"] {
+			channels := []map[string]string{}
+			if *email != "" {
+				channels = append(channels, map[string]string{"kind": "email", "to": *email})
+			}
+			if *telegram != "" {
+				channels = append(channels, map[string]string{"kind": "telegram", "to": *telegram})
+			}
+			patch["channels"] = channels
+		}
+		if len(patch) == 0 {
+			return fmt.Errorf("nothing to change — give at least one of --name, --trust, --email, --telegram")
+		}
+		return api("PATCH", "/api/v1/people/"+args[1], patch)
 	case "list":
 		return api("GET", "/api/v1/people", nil)
 	case "test":

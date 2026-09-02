@@ -134,6 +134,68 @@ func TestAdminLoginThrottledAndAudited(t *testing.T) {
 	t.Fatal("no admin.login_failed audit entry")
 }
 
+// The people page edit form round-trips, keeps channels it cannot show,
+// and the event page's Unassign button removes the track.
+func TestAdminPeopleEditAndUnassign(t *testing.T) {
+	svc, _, admin := newTestServer(t)
+	login := doForm(t, admin, "/admin/login", url.Values{"token": {testToken}}, nil)
+	c := adminCookieFrom(t, login)
+	p, err := svc.AddPerson("ana", core.TrustRespond, []core.Address{
+		{Kind: "email", To: "ana@x.local"}, {Kind: "webhook", To: "https://hooks.x.local/ana"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/admin/people", nil)
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	admin.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `value="ana@x.local"`) || !strings.Contains(rec.Body.String(), "/admin/people/"+p.ID+"/edit") {
+		t.Fatalf("people page lacks the prefilled edit form:\n%s", rec.Body)
+	}
+
+	w := doForm(t, admin, "/admin/people/"+p.ID+"/edit", url.Values{
+		"name": {"Ana L."}, "trust": {"propose"}, "email": {"ana@new.local"}, "telegram": {"99"},
+	}, c)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("edit: %d\n%s", w.Code, w.Body)
+	}
+	got := svc.People()[0]
+	if got.Name != "Ana L." || got.Trust != core.TrustPropose || len(got.Channels) != 3 {
+		t.Fatalf("edit did not apply as a patch: %+v", got)
+	}
+	kinds := map[string]string{}
+	for _, ch := range got.Channels {
+		kinds[ch.Kind] = ch.To
+	}
+	if kinds["email"] != "ana@new.local" || kinds["telegram"] != "99" || kinds["webhook"] != "https://hooks.x.local/ana" {
+		t.Fatalf("two-field form lost a channel: %+v", got.Channels)
+	}
+	if got.ID != p.ID || got.PortalToken != p.PortalToken {
+		t.Fatal("edit changed identity")
+	}
+
+	// Unassign from the event page.
+	start := time.Now().Add(72 * time.Hour).UTC()
+	e, _ := svc.CreateEvent(core.EventInput{Title: "Track", StartsAt: start, EndsAt: start.Add(time.Hour)})
+	svc.Assign(e.ID, p.ID, "")
+	req = httptest.NewRequest("GET", "/admin/event/"+e.ID, nil)
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	admin.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), "/admin/event/"+e.ID+"/unassign") {
+		t.Fatalf("event page lacks the unassign button:\n%s", rec.Body)
+	}
+	w = doForm(t, admin, "/admin/event/"+e.ID+"/unassign", url.Values{"person_id": {p.ID}}, c)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("unassign: %d\n%s", w.Code, w.Body)
+	}
+	if ov := svc.Overview(); len(ov.Events[0].Assignees) != 0 {
+		t.Fatalf("still assigned: %+v", ov.Events[0])
+	}
+}
+
 // A vanished occurrence stays on the overview across fetches — it is an
 // open decision, not a line in the last report.
 func TestAdminOverviewKeepsVanishedAcrossFetches(t *testing.T) {
