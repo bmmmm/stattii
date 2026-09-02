@@ -69,11 +69,16 @@ func (s *Service) UpdatePerson(id string, in PersonUpdate) (Person, error) {
 		fields = append(fields, "trust")
 	}
 	wasReachable := p.Reachable()
-	if in.Channels != nil {
+	if in.Channels != nil && !sameChannels(p.Channels, channels) {
 		// Kinds only — addresses do not belong in the audit trail.
 		audit["channels_from"], audit["channels_to"] = channelKinds(p.Channels), channelKinds(channels)
 		p.Channels = channels
 		fields = append(fields, "channels")
+	}
+	out := *p
+	out.Channels = append([]Address(nil), p.Channels...)
+	if len(fields) == 0 {
+		return out, nil // a no-op patch is not an audit event
 	}
 	audit["fields"] = fields
 	s.auditLocked("person.updated", audit)
@@ -81,9 +86,54 @@ func (s *Service) UpdatePerson(id string, in PersonUpdate) (Person, error) {
 		s.noteUnreachablePersonLocked(p)
 	}
 	s.saveLocked()
-	out := *p
-	out.Channels = append([]Address(nil), p.Channels...)
 	return out, nil
+}
+
+func sameChannels(a, b []Address) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// PatchChannels edits the one-email-one-telegram view of a channel list
+// the way the panel form and the CLI present it: the first email and the
+// first telegram entry are slots, everything else (a second email, a
+// webhook) rides along untouched. nil keeps a slot, "" drops it, a value
+// replaces it — a form that cannot show a channel must never delete it.
+func PatchChannels(existing []Address, email, telegram *string) []Address {
+	var emailTo, tgTo string
+	var others []Address
+	seenEmail, seenTelegram := false, false
+	for _, ch := range existing {
+		switch {
+		case ch.Kind == "email" && !seenEmail:
+			seenEmail, emailTo = true, ch.To
+		case ch.Kind == "telegram" && !seenTelegram:
+			seenTelegram, tgTo = true, ch.To
+		default:
+			others = append(others, ch)
+		}
+	}
+	if email != nil {
+		emailTo = strings.TrimSpace(*email)
+	}
+	if telegram != nil {
+		tgTo = strings.TrimSpace(*telegram)
+	}
+	out := []Address{}
+	if emailTo != "" {
+		out = append(out, Address{Kind: "email", To: emailTo})
+	}
+	if tgTo != "" {
+		out = append(out, Address{Kind: "telegram", To: tgTo})
+	}
+	return append(out, others...)
 }
 
 func channelKinds(chs []Address) []string {

@@ -207,8 +207,10 @@ func TestAdminOverviewKeepsVanishedAcrossFetches(t *testing.T) {
 	a := icsimport.Occurrence{Key: "a/1", UID: "a", Summary: "Stays", Start: now.Add(48 * time.Hour), End: now.Add(49 * time.Hour)}
 	b := icsimport.Occurrence{Key: "b/1", UID: "b", Summary: "Disappears", Start: now.Add(72 * time.Hour), End: now.Add(73 * time.Hour)}
 	svc.SyncCalendar([]icsimport.Occurrence{a, b}, nil, until)
-	svc.SyncCalendar([]icsimport.Occurrence{a}, nil, until)
-	svc.SyncCalendar([]icsimport.Occurrence{a}, nil, until) // second fetch without b
+	svc.SyncCalendar([]icsimport.Occurrence{a}, nil, until) // b goes missing
+	// The next fetch is suspect (empty feed): its report lists nothing
+	// vanished — a panel reading the last report would show b no more.
+	svc.SyncCalendar(nil, nil, until)
 	req := httptest.NewRequest("GET", "/admin", nil)
 	req.AddCookie(c)
 	rec := httptest.NewRecorder()

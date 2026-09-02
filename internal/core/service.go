@@ -48,10 +48,18 @@ type Config struct {
 	CalendarFetchEvery time.Duration
 }
 
-// validate rejects combinations that would silently do nothing.
+// minFetchEvery keeps the fetcher from hammering a foreign calendar and
+// from flooding audit.jsonl with import.failed during an outage.
+const minFetchEvery = time.Minute
+
+// validate rejects combinations that would silently do nothing, or
+// something silly.
 func (c *Config) validate() error {
 	if c.CalendarFetchEvery > 0 && c.CalendarSource == "" {
 		return errors.New("calendar_fetch_every is set but calendar_source is empty — nothing to fetch")
+	}
+	if c.CalendarFetchEvery > 0 && c.CalendarFetchEvery < minFetchEvery {
+		return fmt.Errorf("calendar_fetch_every %s is below the minimum of %s", c.CalendarFetchEvery, minFetchEvery)
 	}
 	return nil
 }

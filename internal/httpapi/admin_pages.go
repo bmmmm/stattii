@@ -219,7 +219,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
     <label>Telegram chat id <input name="telegram" value="{{.Telegram}}"></label>
     <button class="yes" type="submit">Save</button>
   </form>
-  <p class="muted">Blank a field to drop that channel{{if .Other}}; {{.Other}} other channel(s) not shown here stay as they are{{end}}. Links and portal stay valid — a changed address is not a new person.</p>
+  <p class="muted">Blank a field to drop that channel{{if .Other}}; {{.Other}} other channel(s) not shown here stay as they are{{end}}. Links and portal stay valid — a changed address is not a new person. If the OLD address was wrong, whoever reads it still holds this person's links: revoke them on the event page and rotate the portal link.</p>
   </details>
 </div>
 {{end}}

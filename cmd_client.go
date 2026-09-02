@@ -298,8 +298,10 @@ func cmdPerson(args []string) error {
 	switch args[0] {
 	case "set":
 		// A patch: only flags actually given are sent, so `--name` alone
-		// does not reset trust or wipe the channels. The two channel flags
-		// together REPLACE the list (`--email ""` alone clears it).
+		// does not reset trust or wipe the channels. A channel flag edits
+		// its one slot (`--email ""` drops the email, nothing else) — the
+		// API replaces the whole list, so the CLI reads the current one
+		// and rebuilds it the way the panel form does.
 		if len(args) < 2 {
 			return fmt.Errorf("usage: stattii person set <person-id> [--name ...] [--trust ...] [--email ...] [--telegram ...]")
 		}
@@ -319,14 +321,27 @@ func cmdPerson(args []string) error {
 			patch["trust"] = *trust
 		}
 		if set["email"] || set["telegram"] {
-			channels := []map[string]string{}
-			if *email != "" {
-				channels = append(channels, map[string]string{"kind": "email", "to": *email})
+			var people []core.Person
+			if err := apiJSON("/api/v1/people", &people); err != nil {
+				return err
 			}
-			if *telegram != "" {
-				channels = append(channels, map[string]string{"kind": "telegram", "to": *telegram})
+			var current *core.Person
+			for i := range people {
+				if people[i].ID == args[1] {
+					current = &people[i]
+				}
 			}
-			patch["channels"] = channels
+			if current == nil {
+				return fmt.Errorf("person %s not found", args[1])
+			}
+			var e, tg *string
+			if set["email"] {
+				e = email
+			}
+			if set["telegram"] {
+				tg = telegram
+			}
+			patch["channels"] = core.PatchChannels(current.Channels, e, tg)
 		}
 		if len(patch) == 0 {
 			return fmt.Errorf("nothing to change — give at least one of --name, --trust, --email, --telegram")

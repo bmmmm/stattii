@@ -62,9 +62,13 @@ The cancel page also takes an optional reason; it travels in every notice
 ("Cancelled by Ana. Reason: …").
 
 People change: `stattii person set <id> --email new@example.org` patches
-one field at a time (only the flags you give are sent; `--email ""` drops
-that channel; the panel's Edit form keeps channels it cannot show). A
+one field at a time (only the flags you give change anything; `--email ""`
+drops that one channel; both the CLI and the panel's Edit form leave
+channels they cannot show — a webhook, a second email — untouched). A
 changed address is not a new person — links, portal and assignments stay.
+That cuts both ways: if the *old* address was wrong, whoever reads it
+still holds this person's action links — revoke them (`event
+revoke-links <event-id> <person-id>`) and rotate the portal link.
 `stattii unassign <event-id> <person-id>` takes someone off an event
 (their links die, the recorded answers stay); `stattii series-unassign
 <source-uid> <person-id>` takes them off every *future* occurrence of an

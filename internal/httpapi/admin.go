@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/bmmmm/stattii/internal/core"
@@ -363,19 +362,30 @@ func (s *Server) adminEventAssign(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminEventUnassign mirrors adminEventAssign: "series" removes the
-// person from the whole imported series (future occurrences only).
+// person from THIS occurrence and from every future one of the imported
+// series. UnassignSeries alone skips a past or cancelled occurrence —
+// the button was clicked on this page, so this one goes regardless.
 func (s *Server) adminEventUnassign(w http.ResponseWriter, r *http.Request) {
-	if r.FormValue("series") == "1" {
-		e, err := s.svc.EventByID(r.PathValue("id"))
-		if err != nil || e.SourceUID == "" {
-			s.renderAdminError(w, core.ErrNotFound)
-			return
-		}
-		_, err = s.svc.UnassignSeries(e.SourceUID, r.FormValue("person_id"))
-		s.adminAct(w, r, err)
+	id, pid := r.PathValue("id"), r.FormValue("person_id")
+	if r.FormValue("series") != "1" {
+		s.adminAct(w, r, s.svc.Unassign(id, pid))
 		return
 	}
-	s.adminAct(w, r, s.svc.Unassign(r.PathValue("id"), r.FormValue("person_id")))
+	e, err := s.svc.EventByID(id)
+	if err != nil || e.SourceUID == "" {
+		s.renderAdminError(w, core.ErrNotFound)
+		return
+	}
+	here := s.svc.Unassign(id, pid)
+	if here != nil && !errors.Is(here, core.ErrNotFound) {
+		s.renderAdminError(w, here)
+		return
+	}
+	if _, err := s.svc.UnassignSeries(e.SourceUID, pid); err != nil && !(errors.Is(err, core.ErrNotFound) && here == nil) {
+		s.renderAdminError(w, err)
+		return
+	}
+	s.adminAct(w, r, nil)
 }
 
 func (s *Server) adminRotatePortal(w http.ResponseWriter, r *http.Request) {
@@ -518,27 +528,8 @@ func (s *Server) adminPeopleEdit(w http.ResponseWriter, r *http.Request) {
 		s.renderAdminError(w, core.ErrNotFound)
 		return
 	}
-	var channels []core.Address
-	if v := strings.TrimSpace(r.FormValue("email")); v != "" {
-		channels = append(channels, core.Address{Kind: "email", To: v})
-	}
-	if v := strings.TrimSpace(r.FormValue("telegram")); v != "" {
-		channels = append(channels, core.Address{Kind: "telegram", To: v})
-	}
-	seenEmail, seenTelegram := false, false
-	for _, ch := range current.Channels {
-		switch {
-		case ch.Kind == "email" && !seenEmail:
-			seenEmail = true // the form's slot — replaced above
-		case ch.Kind == "telegram" && !seenTelegram:
-			seenTelegram = true
-		default:
-			channels = append(channels, ch)
-		}
-	}
-	if channels == nil {
-		channels = []core.Address{}
-	}
+	email, telegram := r.FormValue("email"), r.FormValue("telegram")
+	channels := core.PatchChannels(current.Channels, &email, &telegram)
 	name := r.FormValue("name")
 	trust := core.TrustLevel(r.FormValue("trust"))
 	_, err := s.svc.UpdatePerson(id, core.PersonUpdate{Name: &name, Trust: &trust, Channels: &channels})

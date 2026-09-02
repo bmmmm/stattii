@@ -26,6 +26,11 @@ type stubFeed struct {
 }
 
 func (f *stubFeed) RoundTrip(r *http.Request) (*http.Response, error) {
+	// Like the real transport: a cancelled context is an error, not a
+	// response — otherwise the shutdown path in fetchOnce is never hit.
+	if err := r.Context().Err(); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -639,5 +644,8 @@ func TestFetchEveryRequiresSource(t *testing.T) {
 	}
 	if _, err := NewService(store, Config{CalendarFetchEvery: time.Hour}, &fakeNotifier{}); err == nil {
 		t.Fatal("calendar_fetch_every without calendar_source must be refused")
+	}
+	if _, err := NewService(store, Config{CalendarSource: "https://x.local/c.ics", CalendarFetchEvery: 10 * time.Second}, &fakeNotifier{}); err == nil {
+		t.Fatal("a 10s polling interval must be refused")
 	}
 }

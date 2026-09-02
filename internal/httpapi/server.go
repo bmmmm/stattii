@@ -522,9 +522,14 @@ func (s *Server) createPerson(w http.ResponseWriter, r *http.Request) {
 }
 
 // updatePerson is a patch: absent keys stay, `"channels": []` clears.
+// Unknown keys are rejected here — on a patch a typo'd key would be a
+// silent 200 that changed nothing.
 func (s *Server) updatePerson(w http.ResponseWriter, r *http.Request) {
 	var in core.PersonUpdate
-	if !readJSON(w, r, &in) {
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
 	p, err := s.svc.UpdatePerson(r.PathValue("id"), in)

@@ -64,8 +64,38 @@ func TestUpdatePersonPatchSemantics(t *testing.T) {
 	if _, err := svc.UpdatePerson("pe_nope", PersonUpdate{Name: str("x")}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown person: %v", err)
 	}
+	// A no-op patch is not an audit event.
+	if _, err := svc.UpdatePerson(p.ID, PersonUpdate{Name: str("Ana Lopez"), Channels: chans()}); err != nil {
+		t.Fatal(err)
+	}
 	if auditCount(t, svc, "person.updated") != 3 {
-		t.Fatal("each applied update must audit once")
+		t.Fatal("each applied update must audit exactly once, a no-op never")
+	}
+}
+
+// The one-email-one-telegram view of a channel list edits its two slots
+// and leaves everything else alone — the panel form and the CLI share it.
+func TestPatchChannelsKeepsWhatItCannotShow(t *testing.T) {
+	existing := []Address{
+		{Kind: "email", To: "a@x.local"}, {Kind: "webhook", To: "https://h.x.local/a"},
+		{Kind: "telegram", To: "1"}, {Kind: "email", To: "second@x.local"},
+	}
+	got := PatchChannels(existing, str(" fixed@x.local "), nil)
+	want := []Address{{Kind: "email", To: "fixed@x.local"}, {Kind: "telegram", To: "1"},
+		{Kind: "webhook", To: "https://h.x.local/a"}, {Kind: "email", To: "second@x.local"}}
+	if !sameChannels(got, want) {
+		t.Fatalf("email slot edit: got %+v", got)
+	}
+	got = PatchChannels(existing, str(""), str(""))
+	want = []Address{{Kind: "webhook", To: "https://h.x.local/a"}, {Kind: "email", To: "second@x.local"}}
+	if !sameChannels(got, want) {
+		t.Fatalf("dropping both slots: got %+v", got)
+	}
+	if got := PatchChannels(nil, nil, str("42")); !sameChannels(got, []Address{{Kind: "telegram", To: "42"}}) {
+		t.Fatalf("adding to an empty list: got %+v", got)
+	}
+	if got := PatchChannels(nil, str(""), nil); got == nil || len(got) != 0 {
+		t.Fatalf("result must be a non-nil empty list (JSON []), got %#v", got)
 	}
 }
 

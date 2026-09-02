@@ -307,6 +307,8 @@ func (s *Service) CalendarConfigured() bool { return s.cfg.CalendarSource != "" 
 // VanishedEvents lists the imported events currently missing from the
 // source and still ahead: the operator's open decisions. Cancelling one
 // in the panel is the dismissal — the notices go out, the row goes away.
+// A vanished occurrence whose time has passed drops off the list by
+// itself (nothing left to decide); its VanishedAt stays in the record.
 func (s *Service) VanishedEvents() []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
