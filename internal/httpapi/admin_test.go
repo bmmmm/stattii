@@ -253,4 +253,22 @@ func TestAdminEventPageShowsNobodyWasTold(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "Nobody was told") || !strings.Contains(rec.Body.String(), "Propagation") {
 		t.Fatalf("told cancellation mis-rendered:\n%s", rec.Body)
 	}
+
+	// The guard rail: 120 days later the outbox has been pruned and the
+	// propagation card is gone — the told cancellation must NOT turn red.
+	// A card keyed on Propagation.Total would.
+	svc.Tick(time.Now()) // deliver
+	later := time.Now().Add(120 * 24 * time.Hour)
+	svc.SetClock(func() time.Time { return later })
+	svc.Tick(later) // prune
+	if ps, _ := svc.Propagation(e2.ID); ps.Total != 0 {
+		t.Fatalf("setup: expected the outbox pruned, got %+v", ps)
+	}
+	req = httptest.NewRequest("GET", "/admin/event/"+e2.ID, nil)
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	admin.ServeHTTP(rec, req)
+	if strings.Contains(rec.Body.String(), "Nobody was told") {
+		t.Fatalf("pruned outbox turned a told cancellation red:\n%s", rec.Body)
+	}
 }

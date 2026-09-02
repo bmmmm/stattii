@@ -86,7 +86,7 @@ details{margin:.5rem 0}
   {{if .View.Decided}}<p class="muted">You last answered: <strong>{{.View.Decided.Action}}</strong> ({{.View.Decided.At.Format "02 Jan 15:04"}}). You can change your answer until the event.</p>{{end}}
   <form method="post" action="/a/{{.Token}}">
     {{if eq .View.Action "confirm"}}<button class="yes" type="submit">Yes, this event takes place</button>
-    {{else}}<p><input name="reason" maxlength="280" placeholder="Why? (optional)"></p>
+    {{else}}<p><label>Why? (optional) <input name="reason" maxlength="280"></label></p>
     <button class="no" type="submit">Cancel this event</button>{{end}}
   </form>
   <p class="muted">One click on the button above is enough. This link is personal.</p>

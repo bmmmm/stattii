@@ -41,8 +41,10 @@ func auditCount(t *testing.T, svc *Service, kind string) int {
 func mustDeadmanEvent(t *testing.T, svc *Service, startIn time.Duration) Event {
 	t.Helper()
 	start := svc.now().Add(startIn)
+	// Title chosen so the machine-string assertions below cannot trip on
+	// the fixture itself.
 	e, err := svc.CreateEvent(EventInput{
-		Title: "Deadman", StartsAt: start, EndsAt: start.Add(time.Hour), IfUnconfirmed: "cancel",
+		Title: "Quiet Night", StartsAt: start, EndsAt: start.Add(time.Hour), IfUnconfirmed: "cancel",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +328,7 @@ func TestCancellationBodyNamesWhoCancelled(t *testing.T) {
 	svc.Tick(*clock)
 	var dmBody string
 	for _, m := range fake.byPurposeTo("all@test.local") {
-		if strings.HasPrefix(m.Subject, "CANCELLED") && strings.Contains(m.Body, "Deadman") {
+		if strings.HasPrefix(m.Subject, "CANCELLED") && strings.Contains(m.Body, "Quiet Night") {
 			dmBody = m.Body
 		}
 	}

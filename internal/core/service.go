@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const timeFmt = "Mon, 02 Jan 2006 15:04 MST"
@@ -301,6 +302,21 @@ func (s *Service) CancelEvent(eventID, personID, reason, via string) (Event, err
 	return e, err
 }
 
+// maxReason bounds the free-text reason attached to a cancellation; it
+// renders in every notice, on the public pages, and in the ICS feed.
+const maxReason = 280
+
+// cleanReason normalises typed free text for the notices: one line,
+// trimmed, bounded. Over-long input is cut, not rejected — the
+// cancellation must go through whatever was typed next to it.
+func cleanReason(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if utf8.RuneCountInString(s) > maxReason {
+		s = string([]rune(s)[:maxReason])
+	}
+	return s
+}
+
 func (s *Service) cancelLocked(eventID, personID, reason, via string) (Event, error) {
 	e := s.state.Event(eventID)
 	if e == nil {
@@ -309,6 +325,9 @@ func (s *Service) cancelLocked(eventID, personID, reason, via string) (Event, er
 	if e.Status == StatusCancelled {
 		return *e, ErrCancelled
 	}
+	// Every path — link form, portal note, accepted proposal, admin
+	// form, API — ends up here, so this is where the bound lives.
+	reason = cleanReason(reason)
 	now := s.now()
 	e.Status = StatusCancelled
 	e.CancelReason = reason
@@ -461,14 +480,17 @@ func (s *Service) nobodyToldLocked(e *Event, purpose string, n int, page bool) {
 // what to do about each — the admin reads this once and must be able to
 // fix it without opening the code.
 func (s *Service) nobodyToldBodyLocked(e *Event, purpose string) string {
-	what := map[string]string{"cancellation": "cancelled", "moved": "moved", "reinstated": "reinstated"}[purpose]
+	what, known := map[string]string{"cancellation": "cancelled", "moved": "moved", "reinstated": "reinstated"}[purpose]
+	if !known {
+		what = purpose // a future purpose reads oddly, never as "was ,"
+	}
 	body := fmt.Sprintf("%s on %s was %s, but the notice reached NOBODY:\n"+
 		"- no broadcast target is configured (stattii broadcast add),\n"+
 		"- no responsible person has a channel (see /admin/people),\n"+
 		"- no party guest left an address.\n"+
 		"Tell people by hand now, then fix one of the three so the next notice goes out by itself.",
 		e.Title, e.StartsAt.Format(timeFmt), what)
-	if s.webhooksMatchingLocked("event."+what) > 0 {
+	if known && s.webhooksMatchingLocked("event."+what) > 0 {
 		body += "\nA webhook consumer was notified — but no person."
 	}
 	return body

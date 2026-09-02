@@ -96,10 +96,14 @@ func TestActionPageFlow(t *testing.T) {
 	}
 	u, _ := url.Parse(confirmURL)
 
-	// GET renders the button but must not mutate (scanner safety).
+	// GET renders the button but must not mutate (scanner safety). The
+	// reason field belongs to the cancel link only.
 	w := do(t, h, "GET", u.Path, "", "")
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Yes, this event takes place") {
 		t.Fatalf("GET action page: %d\n%s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), `name="reason"`) {
+		t.Fatal("confirm page offers a cancel reason field")
 	}
 	if got, _ := svc.EventByID(e.ID); got.Status != core.StatusScheduled {
 		t.Fatal("GET mutated the event — mail scanners would confirm events")
