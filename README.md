@@ -58,6 +58,24 @@ Every person gets a long-lived portal link (`/p/<token>`) listing their
 events; per-event action links (`/a/<token>`) expire with the event.
 Independent of trust level, every action page offers "suggest a new time
 instead" — that files a proposal, which never changes anything by itself.
+The cancel page also takes an optional reason; it travels in every notice
+("Cancelled by Ana. Reason: …").
+
+People change: `stattii person set <id> --email new@example.org` patches
+one field at a time (only the flags you give are sent; `--email ""` drops
+that channel; the panel's Edit form keeps channels it cannot show). A
+changed address is not a new person — links, portal and assignments stay.
+`stattii unassign <event-id> <person-id>` takes someone off an event
+(their links die, the recorded answers stay); `stattii series-unassign
+<source-uid> <person-id>` takes them off every *future* occurrence of an
+imported series.
+
+**Assigned is not reachable.** A person without any channel can be
+assigned, but stattii treats them as nobody: the reminder waits for
+someone reachable, the deadline does not wait at all, and the admin gets
+one early warning ("Nobody can be reached") while there is still time to
+add a channel or assign someone else. Blank or malformed addresses are
+rejected on entry.
 
 On Telegram, reminders carry inline buttons: one tap on ✅/❌ answers
 directly in the chat (the server long-polls the Bot API; no public webhook
@@ -83,11 +101,22 @@ delivery proof stays in `audit.jsonl`, and undelivered items are never
 pruned. A wrong cancellation is withdrawn with `stattii event reinstate <id>`
 — that too is a propagation transaction and restarts the confirmation cycle.
 
+**A fan-out that reaches nobody is an alarm, not a success.** If a
+cancel, move or reinstate finds no broadcast target, no responsible with
+a channel and no guest with an address, the event is marked, the panel
+shows a red "Nobody was told" card, and the admin is paged with the three
+causes and their remedies — the status flipped, but no human heard, which
+is exactly the locked door. Old addresses stay in the outbox as delivery
+proof even after a person's channels change.
+
 If nobody answers the reminder at all, `deadline.passed` fires (webhook +
-admin ping) `--deadline-lead` (default 24h) before start. Events created
+admin ping) `--deadline-lead` (default 24h) before start; the ping says
+whether nobody was assigned or nobody could be asked. Events created
 with `--if-unconfirmed cancel` go further: silence auto-cancels them with
 full propagation — the dead-man-switch for "nobody checked, so nobody
-stands in front of a locked door".
+stands in front of a locked door". Recipients see "Reason: Not confirmed
+in time."; the auto-cancel page to the admin folds in the "nobody was
+told" fact when it applies.
 
 ## Party invitations
 
@@ -137,6 +166,12 @@ flags/config only).
 Credentials go either directly into the gitignored file or stay in the
 environment via `smtp_pass_env` / `token_env` — your choice.
 
+Set `admin_notify`. Every escalation — stuck deliveries, deadline pings,
+"nobody can be reached", "nobody was told", failing calendar fetches —
+goes there, and without it they only land in the audit log. Prefer a
+channel other than your primary one: escalations travel through the same
+outbox, so a broken SMTP cannot report itself over SMTP.
+
 Flags on `serve`: `--config`, `--listen`, `--admin-listen`, `--data`,
 `--base-url`, `--cal-name`, `--reminder-lead`, `--deadline-lead`,
 `--escalate-after`, `--outbox-retention`, `--tick`, `--trusted-proxies`.
@@ -159,17 +194,30 @@ Environment fallbacks (all optional once `config.json` exists):
 stattii can sit on top of an existing calendar: point `calendar_source`
 at a public ICS feed (Nextcloud public link, `webcal://` or `https://`)
 and trigger a fetch — the panel button, `stattii calendar fetch`, or
-`POST /api/v1/calendar/fetch`. Recurring series are expanded
+`POST /api/v1/calendar/fetch` — or let it poll by itself with
+`calendar_fetch_every` (e.g. `"15m"`; each fetch is bounded by the HTTP
+client's 30s timeout, a failing feed pages the admin once per failure
+episode and once on recovery). Recurring series are expanded
 `calendar_window` (default 60 days) ahead; each occurrence becomes a
 stattii event keyed to its source, so refetches are idempotent. A changed
-start time runs the full move transaction (fan-out included); an end-only
+start time runs the full move transaction (fan-out included — and a move
+that reaches nobody is collected and paged once per fetch); an end-only
 change is a quiet update — nobody has to re-confirm because an event runs
-longer. Events that disappear from the feed are reported but **never**
-auto-cancelled, and a fetch that suddenly returns nothing is flagged
-suspect instead of declaring everything vanished.
+longer. The importer never overwrites a note you wrote on an event.
+
+Events that disappear from the feed are **never** auto-cancelled by the
+import: they are marked (visible in the panel's "Needs attention" until
+they are back in the feed or you cancel them there), the admin is paged
+once when they go missing, and the reminder to the responsible carries a
+note that the entry disappeared — they are the one person who knows
+whether that means "off". A vanished event with `if_unconfirmed=cancel`
+still auto-cancels at its *deadline* if nobody confirms it: the
+dead-man-switch decides, the import does not. A fetch that suddenly
+returns nothing is flagged suspect instead of marking everything vanished.
 Assign a responsible once per series (`stattii series-assign`, or the
 "whole series" checkbox in the panel) and every future occurrence
-inherits them — and their reminders.
+inherits them — and their reminders; `series-unassign` takes them off
+future occurrences again.
 
 ## Admin surface
 
@@ -215,9 +263,12 @@ infrastructure, every visitor shares one rate-limit bucket.
 Everything the CLI does is plain REST under `/api/v1` (bearer auth):
 events (`create/confirm/cancel/move/reinstate/links/responses/propagation`
 plus `invite` and `guests` for party invitations, and link revocation),
-people (incl. test messages and portal rotation), assignments,
-series-assignments, broadcasts, webhooks, proposals, audit, overview,
-`tick`, `calendar/fetch`. Webhook
+people (create, `PATCH /people/{id}` as a patch — absent keys stay,
+`"channels": []` clears — plus test messages and portal rotation),
+assignments (`POST /assignments`, `DELETE /events/{id}/assignees/{pid}`),
+series-assignments (`POST`, `DELETE ?source_uid=&person_id=`),
+broadcasts, webhooks, proposals, audit, overview, `tick`,
+`calendar/fetch`. Webhook
 payloads are signed: `X-Stattii-Signature: sha256=<hex hmac of body>` with
 the per-subscription secret returned **once, on registration** (the list
 endpoint redacts it).

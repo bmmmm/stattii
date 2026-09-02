@@ -36,6 +36,12 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    assignee channel, and every party guest who left an address — recreates
    the locked-door bug. Guest fan-out is status-blind (a decliner still
    needs the move notice); guarded by `TestGuestsGetCancellationFanOut`.
+   A fan-out that reaches **nobody** escalates (`nobodyToldLocked`: audit
+   `propagation.empty`, admin page, red panel card from the event's own
+   `FanOutAt`/`FanOutCount` — never from the prunable outbox); guarded by
+   `TestCancelWithNoRecipientsPagesAdmin`. Assigned ≠ reachable: the
+   scheduler waits only for people with a usable channel
+   (`Person.Reachable`); guarded by `TestDeadlineFiresForUnreachableAssignees`.
 4. **stdlib only.** Any new dependency needs a stated justification.
 5. **Tokens are random, DB-looked-up, revocable.** Never JWT, never decodable.
 6. **Secrets never in tracked files.** `config.json` is gitignored; the
@@ -47,7 +53,10 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    or `/admin` there. Guarded by `TestAdminAPIAbsentFromPublic`.
 9. **The calendar import never cancels.** A feed glitch must not send
    cancellation mail: occurrences that disappear from the source are
-   reported (`import.vanished`, panel attention), the operator decides.
+   marked (`Event.VanishedAt`, sticky until they reappear; `import.vanished`
+   audit, one admin page per fetch, panel attention), the operator decides.
+   The deadline may still auto-cancel a vanished `if_unconfirmed=cancel`
+   event — that is the dead-man-switch deciding, not the import.
    Time changes DO run the full move transaction (owner decision).
 10. **The source feed URL is user/project data** — config on the host,
    never committed anywhere, and never baked into tests.
@@ -69,8 +78,10 @@ export GOCACHE="$HOME/.cache/claudii/go-build" GOMODCACHE="$HOME/.cache/claudii/
 ```
 
 Some tests bind real listeners (`internal/channel`, `internal/core`'s
-import fetch, root `cmd_serve`) — inside the Claude sandbox they fail with
-"operation not permitted" and need a bypass; CI has no sandbox and is fine.
+`TestFetchCalendarEndToEnd`, root `cmd_serve`) — inside the Claude sandbox
+they fail with "operation not permitted" and need a bypass; CI has no
+sandbox and is fine. New fetch tests must NOT bind: use the in-process
+`stubFeed` RoundTripper via `SetCalendarClient` (see `import_test.go`).
 
 ## Conventions
 

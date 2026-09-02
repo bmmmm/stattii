@@ -22,11 +22,22 @@
   occurrences as events (start changes run the move transaction; vanished
   is reported, never cancelled), series responsibles, per-recipient
   tracking timeline + test messages in the panel, `/api/v1` contract test.
-- **Party invitations** (unreleased) — one shared `/i/<token>` link per
+- **Party invitations** — one shared `/i/<token>` link per
   event: invitees self-register (name, optional email, yes/no; answering
   again under the same name updates), aggregate-only public page, guest
   list + link management in panel/API/CLI (`event invite` / `event
   guests`), guests with an address join the cancel/move/reinstate fan-out.
+- **v0.7.0** — flow gaps from the 2026-09-02 review: assigned ≠ reachable
+  (channel validation, `Person.Reachable`, the deadline no longer waits
+  for an ask that cannot go out, one early "nobody can be reached" page);
+  a fan-out with zero recipients is an alarm (`propagation.empty`, "Nobody
+  was told" page + red panel card from `FanOutAt/FanOutCount`); cancel
+  notices say who cancelled, link cancels take a reason; the auto-cancel
+  reason is recipient-facing. Calendar: `calendar_fetch_every` polling
+  with once-per-episode failure paging, sticky `VanishedAt` marker
+  (panel, page on transition, note in the reminder), the importer keeps
+  operator notes. People: `PATCH /people/{id}` / `person set`, unassign
+  (event + future series), CI runs govulncheck.
 
 ## Phase 2 — production go-live
 
@@ -44,9 +55,12 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
    from the calendar source (`calendar_source`, manual fetch via panel
    button / `stattii calendar fetch` / API): ICS import with recurrence
    expansion into a 60-day window, auto-move with fan-out on source time
-   changes, vanished-is-reported-never-cancelled. Remaining: enter the
-   actual people (+ trust levels), set series responsibles
-   (`series-assign` / panel checkbox), define broadcast targets.
+   changes, vanished-is-reported-never-cancelled; since v0.7.0 the fetch
+   can poll by itself (`calendar_fetch_every`, off in prod until switched
+   on deliberately) and people are editable. Remaining: enter the actual
+   people (+ trust levels, `person set` for corrections), set series
+   responsibles (`series-assign` / panel checkbox), define broadcast
+   targets — until then every cancellation raises "Nobody was told".
 4. ~~**First live cycle**~~ — observed 2026-08-12 with test data:
    reminder → click → confirm → feed, then cancel → propagation complete
    (delivered 1/1). Repeat once with real data as part of step 3.
@@ -97,6 +111,21 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
   address to itself lands only in Sent/All Mail, never the inbox — a
   self-round-trip "did not arrive" is Gmail dedup, not a delivery failure.
   Test deliverability cross-provider.
+- **Assigned ≠ reachable** (review 2026-09-02): the reminder waited for a
+  person with a channel, the deadline waited for the reminder as soon as
+  anyone was assigned — one channel-less responsible disarmed the
+  dead-man-switch completely. The scheduler now keys on
+  `Person.Reachable`, and a blank `{"kind":"","to":""}` no longer counts
+  as a channel.
+- **A fan-out with zero recipients is an alarm.** Prod had no broadcast
+  targets, so a cancellation produced 0 outbox items, a hidden panel card
+  and no page — a green status nobody heard about. Every propagation
+  transaction now audits `propagation.empty` and pages "Nobody was told".
+- **Panel truth comes from persisted event fields, not the outbox**:
+  `Propagation.Total == 0` also happens after retention pruning of a
+  correctly told cancellation, so "nobody was told" reads
+  `FanOutAt/FanOutCount` on the event; likewise "vanished" is
+  `Event.VanishedAt`, not a line in the last import report.
 - **Guest fan-out is status-blind**: a party guest who left an address gets
   cancel/move/reinstate notices regardless of their yes/no — the decliner
   declined the *old* date, and a "no" who shows up anyway is the classic
