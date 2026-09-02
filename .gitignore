@@ -4,6 +4,10 @@
 /config.json
 .claude/settings.local.json
 
+# Local working list: ordering and notes for this checkout only. Actionable
+# work with a number lives in Forgejo; this file may talk about production.
+/TODO.md
+
 # State and credentials wherever a non-default data_dir puts them —
 # these must never be one `git add -A` away from the public mirror.
 state.json
