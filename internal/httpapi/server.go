@@ -527,14 +527,9 @@ func (s *Server) createPerson(w http.ResponseWriter, r *http.Request) {
 }
 
 // updatePerson is a patch: absent keys stay, `"channels": []` clears.
-// Unknown keys are rejected here — on a patch a typo'd key would be a
-// silent 200 that changed nothing.
 func (s *Server) updatePerson(w http.ResponseWriter, r *http.Request) {
 	var in core.PersonUpdate
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+	if !readJSON(w, r, &in) {
 		return
 	}
 	p, err := s.svc.UpdatePerson(r.PathValue("id"), in)
@@ -735,9 +730,20 @@ func jsonError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// readJSON decodes one request body, strictly. Unknown keys are rejected:
+// a typo'd key would otherwise be a silent 200 that changed nothing — the
+// same reason the config file has refused them since v0.6.0. The check
+// extends past the first value, so a stray brace or a second document
+// cannot be half-digested.
 func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(dst); err != nil {
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
 		jsonError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return false
+	}
+	if dec.More() {
+		jsonError(w, http.StatusBadRequest, "invalid JSON body: trailing data after the object")
 		return false
 	}
 	return true

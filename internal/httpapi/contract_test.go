@@ -78,6 +78,16 @@ func TestAdminAPIContract(t *testing.T) {
 	step(404, "GET", "/api/v1/events/ev_nope", "")
 	step(400, "POST", "/api/v1/events", `{"title":`)
 
+	// Strict bodies on every route, not just the people patch: a mistyped
+	// key used to be a silent 200 that changed nothing, and a second
+	// document was half-digested. Both are 400s now.
+	// Both bodies are otherwise complete and valid: the unknown key is the
+	// only thing left to reject, so these cannot pass for another reason.
+	step(400, "POST", "/api/v1/events", `{"title":"Contract","starts_at":"`+start+`","ort":"Hall 3"}`)
+	step(400, "POST", "/api/v1/people", `{"name":"x","trust_level":"respond"}`)
+	step(400, "POST", "/api/v1/events",
+		`{"title":"x","starts_at":"`+start+`"}{"title":"y","starts_at":"`+start+`"}`)
+
 	// assignment + links + responses
 	step(200, "POST", "/api/v1/assignments", `{"event_id":"`+ev.ID+`","person_id":"`+created.Person.ID+`","role":"host"}`)
 	var links map[string]string
