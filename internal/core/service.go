@@ -217,12 +217,14 @@ func (s *Service) ReinstateEvent(eventID, actor string) (Event, error) {
 	e.Seq++
 	e.ReminderSentAt = time.Time{}
 	e.DeadlineFiredAt = time.Time{}
+	e.UnreachableNotifiedAt = time.Time{}
 	s.auditLocked("event.reinstated", map[string]any{"event_id": eventID, "actor": actor})
 	subject := "REINSTATED: " + e.Title
 	body := fmt.Sprintf("%s on %s takes place after all — the cancellation is withdrawn.",
 		e.Title, e.StartsAt.Format(timeFmt))
-	s.fanOutLocked(e, "reinstated", subject, body)
+	n := s.fanOutLocked(e, "reinstated", subject, body)
 	s.fireWebhooksLocked("event.reinstated", *e)
+	s.nobodyToldLocked(e, "reinstated", n, true)
 	s.saveLocked()
 	return *e, nil
 }
@@ -296,15 +298,25 @@ func (s *Service) cancelLocked(eventID, personID, reason, via string) (Event, er
 		})
 		s.auditLocked("response", map[string]any{"event_id": eventID, "person_id": personID, "action": "cancel", "via": via})
 	}
-	s.auditLocked("event.cancelled", map[string]any{"event_id": eventID, "actor": actor, "reason": reason})
+	s.auditLocked("event.cancelled", map[string]any{"event_id": eventID, "actor": actor, "reason": reason, "via": via})
 
+	// One body for every recipient — broadcast, assignee, guest. Who
+	// cancelled is a name or "the organizer", never an id, a link, or the
+	// machinery ("deadline" lives in the audit, not in anyone's inbox).
+	by := "the organizer"
+	if p := s.state.Person(personID); personID != "" && p != nil {
+		by = p.Name
+	}
 	subject := "CANCELLED: " + e.Title
-	body := fmt.Sprintf("%s on %s is CANCELLED.", e.Title, e.StartsAt.Format(timeFmt))
+	body := fmt.Sprintf("%s on %s is CANCELLED.\nCancelled by %s.", e.Title, e.StartsAt.Format(timeFmt), by)
 	if reason != "" {
 		body += "\nReason: " + reason
 	}
-	s.fanOutLocked(e, "cancellation", subject, body)
+	n := s.fanOutLocked(e, "cancellation", subject, body)
 	s.fireWebhooksLocked("event.cancelled", *e)
+	// The dead-man-switch pages the admin itself, with the empty fan-out
+	// folded into that one message — a second page here would be noise.
+	s.nobodyToldLocked(e, "cancellation", n, via != "deadline")
 	return *e, nil
 }
 
@@ -342,6 +354,7 @@ func (s *Service) moveLocked(eventID string, start, end time.Time, note, actor s
 	e.Status = StatusScheduled
 	e.ReminderSentAt = time.Time{}
 	e.DeadlineFiredAt = time.Time{}
+	e.UnreachableNotifiedAt = time.Time{}
 	if note != "" {
 		e.Note = note
 	}
@@ -353,23 +366,30 @@ func (s *Service) moveLocked(eventID string, start, end time.Time, note, actor s
 		newWhen += " until " + end.Format("15:04")
 	}
 	body := fmt.Sprintf("%s has been MOVED.\nOld: %s\nNew: %s", e.Title, old.Format(timeFmt), newWhen)
-	s.fanOutLocked(e, "moved", subject, body)
+	n := s.fanOutLocked(e, "moved", subject, body)
 	s.fireWebhooksLocked("event.moved", *e)
+	// The importer moves whole series at once and pages once per sync
+	// (ImportReport.Silent) instead of once per occurrence.
+	s.nobodyToldLocked(e, "moved", n, actor != "import")
 	return *e, nil
 }
 
 // fanOutLocked enqueues one outbox item per broadcast target, assignee
 // channel, and reachable party guest — the delivery proof for outward
-// communication.
-func (s *Service) fanOutLocked(e *Event, purpose, subject, body string) {
+// communication. Returns the number of messages enqueued and records it
+// on the event: a propagation that reached nobody is an alarm, and the
+// panel must be able to raise it long after the outbox was pruned.
+func (s *Service) fanOutLocked(e *Event, purpose, subject, body string) int {
+	n := 0
 	for _, b := range s.state.Broadcasts {
 		s.enqueueLocked(OutboxItem{
 			EventID: e.ID, Purpose: purpose, Kind: b.Kind, To: b.To,
 			Subject: subject, Body: body,
 		})
+		n++
 	}
 	for _, p := range s.state.Assignees(e.ID) {
-		s.enqueueToPersonLocked(p, OutboxItem{EventID: e.ID, Purpose: purpose, Subject: subject, Body: body})
+		n += len(s.enqueueToPersonLocked(p, OutboxItem{EventID: e.ID, Purpose: purpose, Subject: subject, Body: body}))
 	}
 	// Party guests who left an address are outward recipients like any
 	// other: a guest we cannot tell about a cancellation is exactly the
@@ -389,7 +409,64 @@ func (s *Service) fanOutLocked(e *Event, purpose, subject, body string) {
 			EventID: e.ID, GuestID: g.ID, Purpose: purpose,
 			Kind: "email", To: g.Email, Subject: subject, Body: body,
 		})
+		n++
 	}
+	e.FanOutAt = s.now()
+	e.FanOutCount = n
+	return n
+}
+
+// nobodyToldLocked is the alarm behind every propagation transaction: a
+// cancel/move/reinstate whose fan-out enqueued nothing has flipped a
+// status that no person will ever hear about — the locked-door bug with
+// a green status badge. Always audited; the admin page is the caller's
+// call, because some callers fold it into a message they send anyway.
+func (s *Service) nobodyToldLocked(e *Event, purpose string, n int, page bool) {
+	if n > 0 {
+		return
+	}
+	s.auditLocked("propagation.empty", map[string]any{"event_id": e.ID, "purpose": purpose, "title": e.Title, "status": e.Status})
+	if page {
+		s.notifyAdminLocked("Nobody was told: "+e.Title, s.nobodyToldBodyLocked(e, purpose))
+	}
+}
+
+// nobodyToldBodyLocked names the three ways a fan-out ends up empty and
+// what to do about each — the admin reads this once and must be able to
+// fix it without opening the code.
+func (s *Service) nobodyToldBodyLocked(e *Event, purpose string) string {
+	what := map[string]string{"cancellation": "cancelled", "moved": "moved", "reinstated": "reinstated"}[purpose]
+	body := fmt.Sprintf("%s on %s was %s, but the notice reached NOBODY:\n"+
+		"- no broadcast target is configured (stattii broadcast add),\n"+
+		"- no responsible person has a channel (see /admin/people),\n"+
+		"- no party guest left an address.\n"+
+		"Tell people by hand now, then fix one of the three so the next notice goes out by itself.",
+		e.Title, e.StartsAt.Format(timeFmt), what)
+	if s.webhooksMatchingLocked("event."+what) > 0 {
+		body += "\nA webhook consumer was notified — but no person."
+	}
+	return body
+}
+
+// reachableLocked splits an event's assignees into everyone and those
+// with a usable channel. Staffed and reachable are different questions:
+// the reminder waits for the latter, the deadline for neither.
+func (s *Service) reachableLocked(eventID string) (all, reachable []*Person) {
+	all = s.state.Assignees(eventID)
+	for _, p := range all {
+		if p.Reachable() {
+			reachable = append(reachable, p)
+		}
+	}
+	return all, reachable
+}
+
+func personNames(ps []*Person) string {
+	names := make([]string, 0, len(ps))
+	for _, p := range ps {
+		names = append(names, p.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 // ---- people, assignments, targets ----------------------------------------
@@ -403,6 +480,14 @@ func (s *Service) AddPerson(name string, trust TrustLevel, channels []Address) (
 	}
 	if !trust.Valid() {
 		return Person{}, fmt.Errorf("invalid trust %q (use respond, propose, or direct)", trust)
+	}
+	// A person may have no channel yet (they get one later) — but never a
+	// blank one: {"kind":"","to":""} would count as "has a channel" and
+	// silently defeat every reachability check downstream.
+	for _, ch := range channels {
+		if err := ch.Validate(); err != nil {
+			return Person{}, err
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

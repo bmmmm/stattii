@@ -127,7 +127,7 @@ func TestConfirmViaLink(t *testing.T) {
 	}
 	token := strings.TrimPrefix(confirmURL, "http://test.local/a/")
 
-	v, err := svc.ApplyAction(token)
+	v, err := svc.ApplyAction(token, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,14 +201,14 @@ func TestCancelledEventRejectsConfirm(t *testing.T) {
 	cTok := strings.TrimPrefix(confirmURL, "http://test.local/a/")
 	xTok := strings.TrimPrefix(cancelURL, "http://test.local/a/")
 
-	if _, err := svc.ApplyAction(xTok); err != nil {
+	if _, err := svc.ApplyAction(xTok, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ApplyAction(cTok); err == nil {
+	if _, err := svc.ApplyAction(cTok, ""); err == nil {
 		t.Fatal("confirm on a cancelled event must fail")
 	}
 	// Cancel again is idempotent, not an error.
-	if _, err := svc.ApplyAction(xTok); err != nil {
+	if _, err := svc.ApplyAction(xTok, ""); err != nil {
 		t.Fatalf("re-cancel should be idempotent, got %v", err)
 	}
 }
@@ -308,7 +308,7 @@ func TestLinkExpiresWithEvent(t *testing.T) {
 	token := strings.TrimPrefix(confirmURL, "http://test.local/a/")
 
 	*clock = clock.Add(5 * time.Hour) // event (2h + 2h duration) is over
-	if _, err := svc.ApplyAction(token); err != ErrGone {
+	if _, err := svc.ApplyAction(token, ""); err != ErrGone {
 		t.Fatalf("want ErrGone after event end, got %v", err)
 	}
 }
@@ -469,7 +469,7 @@ func TestOverviewJoinsAssignmentsAndResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ApplyAction(strings.TrimPrefix(confirmURL, "http://test.local/a/")); err != nil {
+	if _, err := svc.ApplyAction(strings.TrimPrefix(confirmURL, "http://test.local/a/"), ""); err != nil {
 		t.Fatal(err)
 	}
 

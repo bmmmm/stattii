@@ -239,7 +239,7 @@ func (s *Server) actionPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) actionApply(w http.ResponseWriter, r *http.Request) {
-	v, err := s.svc.ApplyAction(r.PathValue("token"))
+	v, err := s.svc.ApplyAction(r.PathValue("token"), r.FormValue("reason"))
 	if err != nil && !errors.Is(err, core.ErrCancelled) {
 		s.renderError(w, err)
 		return

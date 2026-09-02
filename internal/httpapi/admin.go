@@ -259,6 +259,11 @@ type adminEventData struct {
 	Propagation core.PropagationStatus
 	People      []core.Person
 	Invite      core.InviteStatus
+	// NobodyTold: the last propagation transaction enqueued nothing.
+	// Derived from the event's persisted fan-out record, not from
+	// Propagation.Total — pruning empties the outbox of old, correctly
+	// propagated cancellations too.
+	NobodyTold bool
 }
 
 func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
@@ -275,7 +280,8 @@ func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
 		s.renderAdminError(w, core.ErrNotFound)
 		return
 	}
-	d := adminEventData{Ev: *found, People: s.svc.People()}
+	d := adminEventData{Ev: *found, People: s.svc.People(),
+		NobodyTold: !found.Event.FanOutAt.IsZero() && found.Event.FanOutCount == 0}
 	outbox := s.svc.OutboxItems(false)
 	responses := s.svc.Responses(id)
 	for _, a := range found.Assignees {

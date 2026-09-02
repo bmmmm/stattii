@@ -132,3 +132,39 @@ func TestAdminLoginThrottledAndAudited(t *testing.T) {
 	}
 	t.Fatal("no admin.login_failed audit entry")
 }
+
+// A cancellation that reached nobody must be visible on the event page —
+// from the event's own fan-out record, so it stays correct after the
+// outbox was pruned.
+func TestAdminEventPageShowsNobodyWasTold(t *testing.T) {
+	svc, _, admin := newTestServer(t)
+	login := doForm(t, admin, "/admin/login", url.Values{"token": {testToken}}, nil)
+	c := adminCookieFrom(t, login)
+	start := time.Now().Add(72 * time.Hour).UTC()
+	e, _ := svc.CreateEvent(core.EventInput{Title: "Silent", StartsAt: start, EndsAt: start.Add(time.Hour)})
+	if _, err := svc.CancelEvent(e.ID, "", "", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/admin/event/"+e.ID, nil)
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	admin.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Nobody was told") {
+		t.Fatalf("event page after an empty cancel: %d\n%s", rec.Code, rec.Body)
+	}
+
+	// Control: a told cancellation renders the propagation card instead.
+	e2, _ := svc.CreateEvent(core.EventInput{Title: "Told", StartsAt: start, EndsAt: start.Add(time.Hour)})
+	p, _ := svc.AddPerson("ana", core.TrustRespond, []core.Address{{Kind: "email", To: "ana@x.local"}})
+	svc.Assign(e2.ID, p.ID, "")
+	if _, err := svc.CancelEvent(e2.ID, "", "", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest("GET", "/admin/event/"+e2.ID, nil)
+	req.AddCookie(c)
+	rec = httptest.NewRecorder()
+	admin.ServeHTTP(rec, req)
+	if strings.Contains(rec.Body.String(), "Nobody was told") || !strings.Contains(rec.Body.String(), "Propagation") {
+		t.Fatalf("told cancellation mis-rendered:\n%s", rec.Body)
+	}
+}

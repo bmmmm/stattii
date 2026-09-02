@@ -26,12 +26,15 @@ func (s *Service) enqueueLocked(item OutboxItem) string {
 // of "message this person" shared by fan-out, reminders, proposal verdicts,
 // and test messages. Returns the enqueued item IDs.
 func (s *Service) enqueueToPersonLocked(p *Person, item OutboxItem) []string {
-	if len(p.Channels) == 0 {
-		s.auditLocked("delivery.skipped", map[string]any{"event_id": item.EventID, "person_id": p.ID, "error": "person has no channels"})
+	if !p.Reachable() {
+		s.auditLocked("delivery.skipped", map[string]any{"event_id": item.EventID, "person_id": p.ID, "error": "person has no usable channel"})
 		return nil
 	}
 	ids := make([]string, 0, len(p.Channels))
 	for _, ch := range p.Channels {
+		if !ch.Usable() {
+			continue // legacy blank entry — nothing to send to
+		}
 		it := item
 		it.PersonID = p.ID
 		it.Kind, it.To = ch.Kind, ch.To
@@ -82,6 +85,19 @@ func (s *Service) fireWebhooksLocked(event string, data any) {
 			},
 		})
 	}
+}
+
+// webhooksMatchingLocked counts the subscriptions an event name would
+// reach — "a consumer heard, but no person did" is worth one sentence
+// in the nobody-was-told page.
+func (s *Service) webhooksMatchingLocked(event string) int {
+	n := 0
+	for _, w := range s.state.Webhooks {
+		if webhookMatches(w, event) {
+			n++
+		}
+	}
+	return n
 }
 
 func webhookMatches(w Webhook, event string) bool {
@@ -154,6 +170,13 @@ const confirmGrace = time.Hour
 
 // Tick runs one scheduler pass: due reminders, missed deadlines, outbox
 // delivery with backoff, and escalation of stuck items.
+//
+// The reminder pass runs before the deadline pass and the two never act
+// on the same event in one tick: the deadline waits for a sent ask plus
+// confirmGrace whenever someone reachable is assigned, and the
+// unreachable early warning lives in [start-ReminderLead, start-
+// DeadlineLead) while the deadline fires from start-DeadlineLead on —
+// disjoint windows, no cross-pass flag to keep in sync.
 func (s *Service) Tick(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -221,18 +244,33 @@ func (s *Service) tickRemindersLocked(now time.Time) bool {
 		if now.Before(e.StartsAt.Add(-s.cfg.ReminderLead)) || now.After(e.StartsAt) {
 			continue
 		}
-		assignees := s.state.Assignees(e.ID)
-		reachable := 0
-		for _, p := range assignees {
-			if len(p.Channels) > 0 {
-				reachable++
-			}
-		}
-		if reachable == 0 {
+		assignees, reachable := s.reachableLocked(e.ID)
+		if len(reachable) == 0 {
 			// Events are created first and staffed second; a tick in
 			// between must not burn the one-shot reminder on zero
 			// reachable recipients — assignees without channels count as
 			// not staffed yet. Leave it pending.
+			//
+			// Staffed but unreachable is different: nobody is coming to
+			// fix that by itself, and the deadline will not wait for an
+			// ask that cannot go out. Warn the admin once, early — only
+			// while the deadline window is still ahead, so this warning
+			// and deadline.passed can never share a tick.
+			if len(assignees) > 0 && e.UnreachableNotifiedAt.IsZero() &&
+				now.Before(e.StartsAt.Add(-s.cfg.DeadlineLead)) {
+				e.UnreachableNotifiedAt = now
+				names := personNames(assignees)
+				s.auditLocked("staffing.unreachable", map[string]any{"event_id": e.ID, "people": names, "count": len(assignees)})
+				body := fmt.Sprintf("%s on %s is assigned to %s — but none of them has a channel, so the confirmation ask cannot go out.\n"+
+					"Add an email or Telegram chat id under /admin/people, or assign someone reachable.",
+					e.Title, e.StartsAt.Format(timeFmt), names)
+				if e.IfUnconfirmed == "cancel" {
+					body += fmt.Sprintf("\nThis event WILL auto-cancel at its deadline (%s) unless it is confirmed before then.",
+						e.StartsAt.Add(-s.cfg.DeadlineLead).Format(timeFmt))
+				}
+				s.notifyAdminLocked("Nobody can be reached: "+e.Title, body)
+				changed = true
+			}
 			continue
 		}
 		for _, p := range assignees {
@@ -270,10 +308,13 @@ func (s *Service) tickDeadlinesLocked(now time.Time) bool {
 		if e.Status != StatusScheduled || !e.DeadlineFiredAt.IsZero() {
 			continue
 		}
-		if e.ReminderSentAt.IsZero() && len(s.state.Assignees(e.ID)) > 0 {
-			// Staffed but not asked yet — the reminder goes out first.
-			// Unstaffed events skip the ask entirely, and the
-			// dead-man-switch must still fire for them.
+		assignees, reachable := s.reachableLocked(e.ID)
+		if e.ReminderSentAt.IsZero() && len(reachable) > 0 {
+			// Staffed with someone reachable but not asked yet — the
+			// reminder goes out first. Unstaffed events skip the ask
+			// entirely, and so do events whose assignees have no channel:
+			// waiting for an ask that can never go out would disarm the
+			// dead-man-switch for exactly the events nobody can confirm.
 			continue
 		}
 		if !e.ReminderSentAt.IsZero() && now.Sub(e.ReminderSentAt) < confirmGrace {
@@ -291,20 +332,36 @@ func (s *Service) tickDeadlinesLocked(now time.Time) bool {
 		e.DeadlineFiredAt = now
 		s.auditLocked("deadline.passed", map[string]any{"event_id": e.ID})
 		s.fireWebhooksLocked("deadline.passed", *e)
+		// Why nobody answered matters to the admin: an ask that never
+		// went out is a staffing problem, not a silent responsible.
+		staffing := ""
+		switch {
+		case len(assignees) == 0:
+			staffing = " Nobody was assigned, so nobody could be asked."
+		case e.ReminderSentAt.IsZero():
+			staffing = fmt.Sprintf(" Responsible: %s — but none of them has a channel, so the ask never went out.", personNames(assignees))
+		}
 		if e.IfUnconfirmed == "cancel" {
 			// Dead-man-switch: silence means the event does not happen —
-			// and the cancellation propagates like any other.
-			if _, err := s.cancelLocked(e.ID, "", "auto-cancelled: unconfirmed by deadline", "deadline"); err != nil {
+			// and the cancellation propagates like any other. The reason
+			// renders on the public pages and in every notice, so it is
+			// written for recipients; "deadline" is audit detail.
+			if _, err := s.cancelLocked(e.ID, "", "Not confirmed in time.", "deadline"); err != nil {
 				s.logf("stattii: dead-man-switch cancel of %s failed: %v", e.ID, err)
 			} else {
-				s.notifyAdminLocked("Auto-cancelled: "+e.Title,
-					fmt.Sprintf("%s on %s was unconfirmed by its deadline and has been auto-cancelled (dead-man-switch). Reinstate if wrong.",
-						e.Title, e.StartsAt.Format(timeFmt)))
+				body := fmt.Sprintf("%s on %s was unconfirmed by its deadline and has been auto-cancelled (dead-man-switch).%s Reinstate if wrong.",
+					e.Title, e.StartsAt.Format(timeFmt), staffing)
+				if e.FanOutCount == 0 {
+					// One page, both facts: cancelLocked skips its own
+					// nobody-was-told page for the deadline path.
+					body += "\n\nThe cancellation itself reached NOBODY — " + s.nobodyToldBodyLocked(e, "cancellation")
+				}
+				s.notifyAdminLocked("Auto-cancelled: "+e.Title, body)
 			}
 		} else {
 			s.notifyAdminLocked("No response: "+e.Title,
-				fmt.Sprintf("%s on %s is still unconfirmed and the response deadline has passed.",
-					e.Title, e.StartsAt.Format(timeFmt)))
+				fmt.Sprintf("%s on %s is still unconfirmed and the response deadline has passed.%s",
+					e.Title, e.StartsAt.Format(timeFmt), staffing))
 		}
 		changed = true
 	}

@@ -434,8 +434,8 @@ func cmdOverview(args []string) error {
 		}
 		fmt.Printf("%s  %s  [%s]%s\n",
 			e.StartsAt.Local().Format("Mon 02 Jan 15:04"), e.Title, e.Status, extra)
-		if len(oe.Assignees) == 0 {
-			fmt.Printf("    (nobody assigned — reminder waits, dead-man-switch does not)\n")
+		if oe.Reachable == 0 {
+			fmt.Printf("    (nobody reachable — the reminder waits, the deadline does not)\n")
 		}
 		for _, a := range oe.Assignees {
 			mark, detail := "–", "no response yet"
@@ -448,6 +448,9 @@ func cmdOverview(args []string) error {
 			role := ""
 			if a.Role != "" {
 				role = " (" + a.Role + ")"
+			}
+			if !a.Reachable {
+				role += " [no channel]"
 			}
 			fmt.Printf("    %s %s%s — %s\n", mark, a.Name, role, detail)
 		}

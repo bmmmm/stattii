@@ -31,7 +31,7 @@ func TestRevokeLinksPairAndRegenerate(t *testing.T) {
 		t.Fatalf("revoked %d links (err %v), want 2", n, err)
 	}
 	for _, u := range []string{confirmURL, cancelURL} {
-		if _, err := svc.ApplyAction(actionToken(u)); !errors.Is(err, ErrGone) {
+		if _, err := svc.ApplyAction(actionToken(u), ""); !errors.Is(err, ErrGone) {
 			t.Fatalf("revoked link still applies: %v", err)
 		}
 	}
@@ -44,7 +44,7 @@ func TestRevokeLinksPairAndRegenerate(t *testing.T) {
 	if newConfirm == confirmURL || newCancel == cancelURL {
 		t.Fatal("regeneration reused a revoked token")
 	}
-	v, err := svc.ApplyAction(actionToken(newConfirm))
+	v, err := svc.ApplyAction(actionToken(newConfirm), "")
 	if err != nil || v.Event.Status != StatusConfirmed {
 		t.Fatalf("fresh link does not work: %v %+v", err, v)
 	}

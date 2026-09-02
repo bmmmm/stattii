@@ -289,3 +289,67 @@ func TestImportCreatedWebhookCarriesSource(t *testing.T) {
 		t.Fatal("no event.created webhook enqueued")
 	}
 }
+
+// The importer runs the move transaction with no note: the MOVED body
+// never carried "calendar update", but it overwrote whatever the
+// operator had written on the event.
+func TestImportMoveKeepsOperatorNote(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	now := *clock
+	until := now.Add(60 * 24 * time.Hour)
+	start := now.Add(90 * time.Hour)
+	svc.SyncCalendar([]icsimport.Occurrence{occ("u1", "Session", start, time.Hour)}, nil, until)
+	ev := svc.Events()[0]
+	if _, err := svc.MoveEvent(ev.ID, start.Add(time.Hour), time.Time{}, "bring the spare keys", "admin"); err != nil {
+		t.Fatal(err)
+	}
+
+	moved := occ("u1", "Session", start, time.Hour)
+	moved.Start = start.Add(48 * time.Hour)
+	moved.End = moved.Start.Add(time.Hour)
+	if rep := svc.SyncCalendar([]icsimport.Occurrence{moved}, nil, until); rep.Moved != 1 {
+		t.Fatalf("report: %+v", rep)
+	}
+	if got, _ := svc.EventByID(ev.ID); got.Note != "bring the spare keys" {
+		t.Fatalf("source move overwrote the operator note: %q", got.Note)
+	}
+}
+
+// A rescheduled series is thirty moves in one sync. Each empty fan-out is
+// audited, the admin is paged once per fetch, and the report lists them.
+func TestImportMovesDoNotFloodAdmin(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, clock := newTestService(t, fake)
+	now := *clock
+	until := now.Add(60 * 24 * time.Hour)
+	var occs []icsimport.Occurrence
+	for i := range 3 {
+		occs = append(occs, occ("series", "Weekly", now.Add(time.Duration(72+i*168)*time.Hour), time.Hour))
+	}
+	svc.SyncCalendar(occs, nil, until)
+	for i := range occs {
+		occs[i].Start = occs[i].Start.Add(2 * time.Hour)
+		occs[i].End = occs[i].Start.Add(time.Hour)
+	}
+	rep := svc.SyncCalendar(occs, nil, until)
+	if rep.Moved != 3 || len(rep.Silent) != 3 {
+		t.Fatalf("report: %+v", rep)
+	}
+	svc.Tick(now)
+	pages := 0
+	for _, m := range fake.byPurposeTo("admin@test.local") {
+		if strings.Contains(strings.ToLower(m.Subject), "nobody was told") {
+			pages++
+		}
+	}
+	if pages != 1 {
+		t.Fatalf("want exactly 1 page for 3 silent moves, got %d", pages)
+	}
+	if got := svc.LastImport(); got == nil || len(got.Silent) != 3 {
+		t.Fatalf("LastImport does not carry the silent list: %+v", got)
+	}
+	if auditCount(t, svc, "propagation.empty") != 3 {
+		t.Fatal("each silent move must still be audited")
+	}
+}

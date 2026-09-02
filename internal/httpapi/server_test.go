@@ -112,6 +112,32 @@ func TestActionPageFlow(t *testing.T) {
 	if got, _ := svc.EventByID(e.ID); got.Status != core.StatusConfirmed {
 		t.Fatal("POST did not confirm")
 	}
+
+	// The cancel link: GET shows the optional reason field and still
+	// mutates nothing; POST with a reason cancels and stores it.
+	_, cancelURL, err := svc.GenerateLinks(e.ID, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cu, _ := url.Parse(cancelURL)
+	w = do(t, h, "GET", cu.Path, "", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `name="reason"`) {
+		t.Fatalf("GET cancel page: %d\n%s", w.Code, w.Body)
+	}
+	if got, _ := svc.EventByID(e.ID); got.Status != core.StatusConfirmed {
+		t.Fatal("GET on the cancel link mutated the event")
+	}
+	form := url.Values{"reason": {"venue flooded"}}
+	req := httptest.NewRequest("POST", cu.Path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST cancel: %d\n%s", rec.Code, rec.Body)
+	}
+	if got, _ := svc.EventByID(e.ID); got.Status != core.StatusCancelled || got.CancelReason != "venue flooded" {
+		t.Fatalf("POST cancel with reason did not apply: %+v", got)
+	}
 }
 
 func TestActionProposeFlow(t *testing.T) {

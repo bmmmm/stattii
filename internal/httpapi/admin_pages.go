@@ -35,7 +35,7 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 </div>
 </body></html>{{end}}
 
-{{define "admin_chip"}}<span class="chip {{if eq .Action "confirm"}}ok{{else if eq .Action "cancel"}}bad{{end}}">{{if eq .Action "confirm"}}✓{{else if eq .Action "cancel"}}✗{{else}}–{{end}} {{.Name}}{{if .Role}} ({{.Role}}){{end}}</span>{{end}}
+{{define "admin_chip"}}<span class="chip {{if eq .Action "confirm"}}ok{{else if eq .Action "cancel"}}bad{{end}}">{{if eq .Action "confirm"}}✓{{else if eq .Action "cancel"}}✗{{else}}–{{end}} {{.Name}}{{if .Role}} ({{.Role}}){{end}}{{if not .Reachable}} · no channel{{end}}</span>{{end}}
 
 {{define "admin_overview"}}{{template "admin_head"}}
 <h1>stattii admin</h1>
@@ -47,11 +47,12 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{end}}
 
 {{$imp := .LastImport}}
-{{if or .Proposals .Pending (and $imp (or $imp.Vanished $imp.Conflicts $imp.Skipped))}}
+{{if or .Proposals .Pending (and $imp (or $imp.Vanished $imp.Conflicts $imp.Skipped $imp.Silent))}}
 <div class="card">
 <h2>Needs attention</h2>
 {{if $imp}}
 {{range $imp.Vanished}}<p class="bad">Gone from the calendar (NOT auto-cancelled — cancel it yourself if real): {{.}}</p>{{end}}
+{{range $imp.Silent}}<p class="bad">Moved by the source but nobody was told (no broadcast, no reachable responsible, no guest with an address): {{.}}</p>{{end}}
 {{range $imp.Conflicts}}<p class="bad">Import conflict: {{.}}</p>{{end}}
 {{range $imp.Skipped}}<p class="muted">Import skipped: {{.}}</p>{{end}}
 {{end}}
@@ -73,8 +74,8 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 <div class="card">
   <h2><a href="/admin/event/{{.Event.ID}}">{{.Event.Title}}</a> {{template "status" .Event.Status}}</h2>
   <p>{{.Event.StartsAt.Format "Mon, 02 Jan 2006 15:04"}}{{if .Event.Location}} · {{.Event.Location}}{{end}}</p>
-  <p>{{if .Assignees}}{{range .Assignees}}{{template "admin_chip" .}}{{end}}
-  {{else}}<span class="muted">nobody assigned — the reminder waits</span>{{end}}</p>
+  <p>{{range .Assignees}}{{template "admin_chip" .}}{{end}}
+  {{if not .Reachable}}<span class="muted">nobody reachable — the reminder waits, the deadline does not</span>{{end}}</p>
 </div>
 {{end}}
 {{if not .Ov.Events}}<p class="muted">No upcoming events.</p>{{end}}
@@ -111,9 +112,9 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 <div class="card">
 {{template "event" .Ev.Event}}
 {{if .Ev.Event.SourceUID}}<p class="muted">↻ imported series occurrence</p>{{end}}
-{{if not .Tracks}}<p class="muted">nobody assigned — the reminder waits</p>{{end}}
+{{if not .Ev.Reachable}}<p class="muted">nobody reachable — the reminder waits, the deadline does not</p>{{end}}
 {{range .Tracks}}
-  <p><strong>{{.A.Name}}</strong>{{if .A.Role}} ({{.A.Role}}){{end}} <span class="muted">· trust: {{.A.Trust}}</span>
+  <p><strong>{{.A.Name}}</strong>{{if .A.Role}} ({{.A.Role}}){{end}} <span class="muted">· trust: {{.A.Trust}}{{if not .A.Reachable}} · <span class="bad">no channel</span>{{end}}</span>
   <form method="post" action="/admin/event/{{$.Ev.Event.ID}}/links/revoke"><input type="hidden" name="person_id" value="{{.A.PersonID}}"><button type="submit">Revoke links</button></form></p>
   <ul class="tl">
   {{range .Entries}}<li class="{{if .Bad}}bad{{else if .Muted}}muted{{end}}">{{.At.Format "02 Jan 15:04"}}&nbsp; {{.Icon}} {{.Text}}</li>
@@ -170,6 +171,14 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
 {{end}}
 {{if and .Invite.Active (not .Invite.Guests)}}<p class="muted">nobody has answered yet</p>{{end}}
 </div>
+
+{{if .NobodyTold}}
+<div class="card">
+<h2 class="bad">Nobody was told</h2>
+<p class="bad">The last {{if eq .Ev.Event.Status "cancelled"}}cancellation{{else}}change{{end}} ({{.Ev.Event.FanOutAt.Format "02 Jan 15:04"}}) reached no one: no broadcast target, no responsible person with a channel, no guest with an address.</p>
+<p class="muted">Tell people by hand, then add a broadcast target or give the responsible people a channel so the next notice goes out by itself.</p>
+</div>
+{{end}}
 
 {{if .Propagation.Total}}
 <div class="card">

@@ -88,21 +88,34 @@ func (in *RSVPInput) Validate() error {
 	// here — never accepted now and failing forever in the outbox.
 	in.Email = strings.TrimSpace(in.Email)
 	if in.Email != "" {
-		addr, err := mail.ParseAddress(in.Email)
-		if err != nil || len(addr.Address) > maxGuestMail {
+		addr, ok := parseEmail(in.Email)
+		if !ok {
 			return errors.New("that email address does not look right")
 		}
-		at := strings.LastIndex(addr.Address, "@")
-		if at < 0 || !strings.Contains(addr.Address[at+1:], ".") {
-			return errors.New("that email address does not look right")
-		}
-		in.Email = addr.Address
+		in.Email = addr
 	}
 	in.Note = strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(in.Note))
 	if utf8.RuneCountInString(in.Note) > maxGuestNote {
 		return fmt.Errorf("the message can be at most %d characters", maxGuestNote)
 	}
 	return nil
+}
+
+// parseEmail normalises an address and reports whether it is structurally
+// sound: parseable, bounded, with a dotted domain. Shared by guest RSVPs
+// and person channels — both become outward recipients whose delivery
+// gates the propagation proof, so neither may accept an address that can
+// only fail forever in the outbox.
+func parseEmail(s string) (string, bool) {
+	addr, err := mail.ParseAddress(strings.TrimSpace(s))
+	if err != nil || len(addr.Address) > maxGuestMail {
+		return "", false
+	}
+	at := strings.LastIndex(addr.Address, "@")
+	if at < 0 || !strings.Contains(addr.Address[at+1:], ".") {
+		return "", false
+	}
+	return addr.Address, true
 }
 
 // InviteView is what the public invite page may see: the event and the two

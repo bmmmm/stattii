@@ -30,7 +30,9 @@ func TestDeadlineAutoCancel(t *testing.T) {
 	if got.Status != StatusCancelled {
 		t.Fatalf("dead-man-switch did not cancel, status = %s", got.Status)
 	}
-	if !strings.Contains(got.CancelReason, "auto-cancelled") {
+	// The reason renders on public pages and in every notice — it must
+	// read like a sentence to a recipient, not like a log line.
+	if got.CancelReason != "Not confirmed in time." {
 		t.Fatalf("cancel reason = %q", got.CancelReason)
 	}
 	// The auto-cancellation must propagate like a manual one.

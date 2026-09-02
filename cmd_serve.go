@@ -191,7 +191,7 @@ func cmdServe(args []string) {
 		poller := &channel.TelegramPoller{
 			Token: tgToken,
 			Apply: func(token string) (string, error) {
-				v, err := svc.ApplyAction(token)
+				v, err := svc.ApplyAction(token, "")
 				if err != nil {
 					return "", err
 				}

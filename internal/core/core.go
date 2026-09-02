@@ -7,6 +7,9 @@ package core
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -48,6 +51,17 @@ type Event struct {
 	CancelledAt     time.Time `json:"cancelled_at"`
 	ReminderSentAt  time.Time `json:"reminder_sent_at"`
 	DeadlineFiredAt time.Time `json:"deadline_fired_at"`
+	// UnreachableNotifiedAt marks the one-shot early warning that the
+	// event is staffed but nobody assigned has a channel. Reset with the
+	// confirmation cycle (move, reinstate) — never derived from
+	// ReminderSentAt, which stays zero in exactly this situation.
+	UnreachableNotifiedAt time.Time `json:"unreachable_notified_at,omitzero"`
+	// FanOutAt/FanOutCount record the last propagation transaction: when
+	// it ran and how many messages it enqueued. "Nobody was told" is
+	// FanOutAt set with a zero count — read from here, never from the
+	// outbox, whose delivered items get pruned after OutboxRetention.
+	FanOutAt    time.Time `json:"fan_out_at,omitzero"`
+	FanOutCount int       `json:"fan_out_count,omitempty"`
 	// Set on events imported from the calendar source: the series UID
 	// and the stable per-occurrence key the sync matches on.
 	SourceUID string `json:"source_uid,omitempty"`
@@ -87,12 +101,52 @@ type Address struct {
 	To   string `json:"to"`   // mail address, chat id, or URL
 }
 
+// Usable reports whether the address can carry a message at all. A blank
+// kind or target is a placeholder that would count as "has a channel"
+// and silently defeat every reachability check.
+func (a Address) Usable() bool { return a.Kind != "" && a.To != "" }
+
+// Validate checks an address the way its channel will need it. Error
+// texts are operator-facing: they come back from the admin API and forms.
+func (a Address) Validate() error {
+	switch a.Kind {
+	case "email":
+		if _, ok := parseEmail(a.To); !ok {
+			return fmt.Errorf("email address %q does not look right", a.To)
+		}
+	case "telegram":
+		if strings.TrimSpace(a.To) == "" {
+			return errors.New("a telegram channel needs a chat id")
+		}
+	case "webhook":
+		u, err := url.Parse(a.To)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("webhook %q must be an http(s) URL", a.To)
+		}
+	default:
+		return fmt.Errorf("unknown channel kind %q (use email, telegram, or webhook)", a.Kind)
+	}
+	return nil
+}
+
 type Person struct {
 	ID          string     `json:"id"`
 	Name        string     `json:"name"`
 	Trust       TrustLevel `json:"trust"`
 	PortalToken string     `json:"portal_token"`
 	Channels    []Address  `json:"channels"`
+}
+
+// Reachable reports whether at least one channel can carry a message.
+// Assigned is not reachable: an assignee without a usable channel can
+// never be asked, so the scheduler must not wait for their answer.
+func (p *Person) Reachable() bool {
+	for _, ch := range p.Channels {
+		if ch.Usable() {
+			return true
+		}
+	}
+	return false
 }
 
 type Assignment struct {

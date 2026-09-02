@@ -103,13 +103,17 @@ type Overview struct {
 type OverviewEvent struct {
 	Event     Event              `json:"event"`
 	Assignees []OverviewAssignee `json:"assignees"`
+	// Reachable counts assignees with a usable channel — zero means the
+	// reminder waits and the deadline does not, whatever len(Assignees).
+	Reachable int `json:"reachable"`
 }
 
 type OverviewAssignee struct {
-	PersonID string     `json:"person_id"`
-	Name     string     `json:"name"`
-	Role     string     `json:"role,omitempty"`
-	Trust    TrustLevel `json:"trust"`
+	PersonID  string     `json:"person_id"`
+	Name      string     `json:"name"`
+	Role      string     `json:"role,omitempty"`
+	Trust     TrustLevel `json:"trust"`
+	Reachable bool       `json:"reachable"`
 	// Latest recorded response for this event; empty Action = pending.
 	Action ActionKind `json:"action,omitempty"`
 	Via    string     `json:"via,omitempty"`
@@ -152,9 +156,12 @@ func (s *Service) Overview() Overview {
 			if p == nil {
 				continue
 			}
-			oa := OverviewAssignee{PersonID: p.ID, Name: p.Name, Role: a.Role, Trust: p.Trust}
+			oa := OverviewAssignee{PersonID: p.ID, Name: p.Name, Role: a.Role, Trust: p.Trust, Reachable: p.Reachable()}
 			if r, ok := latest[respKey{e.ID, p.ID}]; ok {
 				oa.Action, oa.Via, oa.At = r.Action, r.Via, r.At
+			}
+			if oa.Reachable {
+				oe.Reachable++
 			}
 			oe.Assignees = append(oe.Assignees, oa)
 		}
@@ -235,7 +242,7 @@ func (s *Service) SendTest(personID string) ([]OutboxItem, error) {
 	if p == nil {
 		return nil, ErrNotFound
 	}
-	if len(p.Channels) == 0 {
+	if !p.Reachable() {
 		return nil, fmt.Errorf("%s has no channels to test", p.Name)
 	}
 	ids := map[string]bool{}

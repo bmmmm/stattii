@@ -36,6 +36,10 @@ type ImportReport struct {
 	Vanished  []string `json:"vanished,omitempty"`
 	Conflicts []string `json:"conflicts,omitempty"` // cancelled here, still/again in the feed
 	Skipped   []string `json:"skipped,omitempty"`   // series the importer could not expand
+	// Silent lists source moves whose MOVED notice reached nobody — the
+	// importer pages the admin once per fetch about them, not once per
+	// occurrence (a rescheduled series is thirty moves in one sync).
+	Silent []string `json:"silent,omitempty"`
 	// Suspect marks a fetch whose result smells like a broken feed (zero
 	// occurrences while imported events exist) — its vanished sweep was
 	// skipped and the report should not be trusted as decision input.
@@ -145,12 +149,18 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 			continue
 		}
 		if !e.StartsAt.Equal(o.Start) {
-			if _, err := s.moveLocked(e.ID, o.Start, o.End, "calendar update", "import"); err != nil {
+			// No note: the move body never carries it, and a non-empty
+			// note would overwrite what the operator wrote on the event.
+			if _, err := s.moveLocked(e.ID, o.Start, o.End, "", "import"); err != nil {
 				rep.Conflicts = append(rep.Conflicts, fmt.Sprintf("%s: move failed: %v", e.Title, err))
 				continue
 			}
 			e.Title, e.Location = title, o.Location
 			rep.Moved++
+			if e.FanOutCount == 0 {
+				rep.Silent = append(rep.Silent,
+					fmt.Sprintf("%s (now %s)", e.Title, e.StartsAt.Format("Mon, 02 Jan 15:04")))
+			}
 			continue
 		}
 		if !e.EndsAt.Equal(o.End) {
@@ -197,10 +207,18 @@ func (s *Service) SyncCalendar(occs []icsimport.Occurrence, skipped []icsimport.
 		s.auditLocked("import.vanished", map[string]any{"event_id": e.ID, "title": e.Title})
 	}
 
+	if len(rep.Silent) > 0 {
+		s.notifyAdminLocked(fmt.Sprintf("Moved but nobody was told: %d event(s)", len(rep.Silent)),
+			"The calendar source moved these events and stattii ran the move transaction, but the MOVED notice reached nobody "+
+				"(no broadcast target, no reachable responsible, no guest with an address):\n- "+
+				strings.Join(rep.Silent, "\n- ")+
+				"\nTell people by hand, then add a broadcast target or give the responsible people a channel.")
+	}
+
 	s.auditLocked("import.done", map[string]any{
 		"created": rep.Created, "moved": rep.Moved, "updated": rep.Updated,
 		"unchanged": rep.Unchanged, "vanished": len(rep.Vanished),
-		"conflicts": len(rep.Conflicts), "skipped": len(rep.Skipped),
+		"conflicts": len(rep.Conflicts), "skipped": len(rep.Skipped), "silent": len(rep.Silent),
 	})
 	s.state.LastImport = &rep
 	s.saveLocked()
@@ -220,6 +238,7 @@ func (s *Service) LastImport() *ImportReport {
 	cp.Vanished = append([]string(nil), cp.Vanished...)
 	cp.Conflicts = append([]string(nil), cp.Conflicts...)
 	cp.Skipped = append([]string(nil), cp.Skipped...)
+	cp.Silent = append([]string(nil), cp.Silent...)
 	return &cp
 }
 

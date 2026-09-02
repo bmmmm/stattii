@@ -5,7 +5,9 @@ package core
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ---- action links ---------------------------------------------------------
@@ -159,9 +161,25 @@ func (s *Service) ProposeMoveViaLink(token string, start, end time.Time, note st
 	return pr, nil
 }
 
+// maxReason bounds the free-text reason a link holder may attach to a
+// cancellation; it renders in every notice and on the public pages.
+const maxReason = 280
+
+// cleanReason normalises recipient-typed free text for the notices: one
+// line, trimmed, bounded. Over-long input is cut, not rejected — the
+// cancellation must go through, and the form already caps the field.
+func cleanReason(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if utf8.RuneCountInString(s) > maxReason {
+		s = string([]rune(s)[:maxReason])
+	}
+	return s
+}
+
 // ApplyAction performs the link's action. Only ever called on POST — a GET
-// must never mutate, because mail scanners prefetch links.
-func (s *Service) ApplyAction(token string) (ActionView, error) {
+// must never mutate, because mail scanners prefetch links. reason is the
+// optional why of a cancel link; confirms ignore it.
+func (s *Service) ApplyAction(token, reason string) (ActionView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	l, e, p, err := s.lookupLinkLocked(token)
@@ -175,7 +193,7 @@ func (s *Service) ApplyAction(token string) (ActionView, error) {
 		if e.Status == StatusCancelled {
 			err = nil // idempotent: their goal is reality already
 		} else {
-			_, err = s.cancelLocked(e.ID, p.ID, "", "link")
+			_, err = s.cancelLocked(e.ID, p.ID, cleanReason(reason), "link")
 		}
 	}
 	if err != nil {
