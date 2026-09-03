@@ -56,7 +56,9 @@ func (t *Telegram) Send(to string, m core.Message) error {
 	}
 	resp, err := sendClient.Post(base+"/bot"+t.Token+"/sendMessage", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		return err
+		// The token sits in the request path, so a transport failure
+		// renders it into the error. It never leaves this call.
+		return redact(err, t.Token)
 	}
 	defer resp.Body.Close()
 	var out struct {

@@ -513,7 +513,8 @@ func (s *Service) collectOutboxLocked(now time.Time, only map[string]bool) ([]ou
 			o.EscalatedAt = now
 			escalations = append(escalations, stuck{
 				subject: "Delivery stuck: " + o.Subject,
-				body:    fmt.Sprintf("Undelivered for %s via %s to %s: %s", now.Sub(o.CreatedAt).Round(time.Minute), o.Kind, o.To, o.LastError),
+				body: fmt.Sprintf("Undelivered for %s via %s to %s: %s",
+					now.Sub(o.CreatedAt).Round(time.Minute), o.Kind, redactURLs(o.To), o.LastError),
 			})
 			changed = true
 		}
@@ -614,8 +615,14 @@ func (s *Service) recordDeliveries(now time.Time, results []outboxResult) {
 		if s.sendingTo[who]--; s.sendingTo[who] <= 0 {
 			delete(s.sendingTo, who)
 		}
+		// This is the funnel every delivery outcome passes through, so it
+		// is where credentials are cut off — the error a channel returns
+		// can carry one (a transport failure renders the request URL), and
+		// for a webhook the target address IS one. An e-mail address or a
+		// chat id is not a URL and stays untouched. The cut sits here, not
+		// at the send: the send now runs unlocked and books nothing.
 		fields := map[string]any{"outbox_id": a.id, "event_id": a.eventID, "purpose": a.purpose,
-			"kind": a.kind, "to": a.to, "attempts": a.attempts + 1}
+			"kind": a.kind, "to": redactURLs(a.to), "attempts": a.attempts + 1}
 		o := s.outboxItemLocked(a.id)
 		if r.err == nil {
 			s.auditLocked("delivery.ok", fields)
@@ -628,7 +635,8 @@ func (s *Service) recordDeliveries(now time.Time, results []outboxResult) {
 			changed = true
 			continue
 		}
-		fields["error"] = r.err.Error()
+		err := redactErr(r.err)
+		fields["error"] = err.Error()
 		s.auditLocked("delivery.fail", fields)
 		if o == nil || o.Delivered() || rearmed {
 			// Gone, delivered through another pass, or re-armed by the
@@ -639,7 +647,7 @@ func (s *Service) recordDeliveries(now time.Time, results []outboxResult) {
 			continue
 		}
 		o.Attempts = a.attempts + 1
-		o.LastError = r.err.Error()
+		o.LastError = err.Error()
 		o.NextAttempt = now.Add(s.cfg.RetryDelay * time.Duration(1<<min(o.Attempts-1, 4)))
 		changed = true
 	}

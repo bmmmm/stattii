@@ -146,11 +146,14 @@ func (p *TelegramPoller) getUpdates(ctx context.Context, offset int, timeout tim
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		p.BaseURL+"/bot"+p.Token+"/getUpdates?"+q.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return nil, redact(err, p.Token)
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, err
+		// Both errors above carry the request URL, and the token is in
+		// its path. Every poll error is logged, so this one line decides
+		// whether the process log holds the bot credential.
+		return nil, redact(err, p.Token)
 	}
 	defer resp.Body.Close()
 	var out struct {
@@ -178,12 +181,12 @@ func (p *TelegramPoller) answer(ctx context.Context, callbackID, text string) er
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		p.BaseURL+"/bot"+p.Token+"/answerCallbackQuery", bytes.NewReader(payload))
 	if err != nil {
-		return err
+		return redact(err, p.Token)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return err
+		return redact(err, p.Token)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))

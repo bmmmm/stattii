@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -55,15 +56,32 @@ func (s *Service) FetchCalendar(ctx context.Context) (ImportReport, error) {
 	}
 	src = strings.Replace(src, "webcal://", "https://", 1)
 	if !strings.HasPrefix(src, "https://") && !strings.HasPrefix(src, "http://") {
-		return ImportReport{}, fmt.Errorf("calendar_source must be http(s), got %q", src)
+		// The value is not echoed: it is the operator's own config, and
+		// a secret address must not be written into an error string.
+		return ImportReport{}, errors.New("calendar_source must be an http(s) or webcal URL")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 	if err != nil {
-		return ImportReport{}, err
+		// A source that passes the prefix check but does not parse (a
+		// trailing newline on a pasted config value is enough) fails
+		// here, and this error reaches the operator raw: the fetch API
+		// renders it into its JSON body, the admin page onto its error
+		// screen — neither passes the bookkeeping that redacts the rest.
+		// A malformed URL is also the one shape redactURLs cannot cut
+		// down, so the address is dropped whole and only the reason kept.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			return ImportReport{}, fmt.Errorf("calendar_source is not a usable URL: %w", ue.Err)
+		}
+		return ImportReport{}, redactErr(err)
 	}
 	resp, err := s.calendarClient().Do(req)
 	if err != nil {
-		return ImportReport{}, fmt.Errorf("fetch calendar: %w", err)
+		// A secret iCal address IS the credential, and a transport
+		// failure renders the whole URL into the error. Redact here, at
+		// the boundary — everything downstream (audit, admin page, mail)
+		// only ever sees the host and the failure kind.
+		return ImportReport{}, fmt.Errorf("fetch calendar: %w", redactErr(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -96,6 +114,10 @@ func (s *Service) noteImportResultLocked(ctx context.Context, err error) bool {
 		return false
 	}
 	if err != nil {
+		// Second line of defence: FetchCalendar redacts its transport
+		// errors, but every path into this bookkeeping ends in the audit
+		// trail and in admin mail, so nothing unredacted passes here.
+		err = redactErr(err)
 		s.auditLocked("import.failed", map[string]any{"error": err.Error()})
 		if s.importFailed {
 			return false
