@@ -106,11 +106,46 @@ func TestVerifyTelegramActorAcceptsGroupChatUnverified(t *testing.T) {
 			continue
 		}
 		found = true
-		if !strings.Contains(string(en.Data), `"reason":"unverified: group chat"`) {
+		if !strings.Contains(string(en.Data), `"reason":"unverified: not a private chat id"`) {
 			t.Fatalf("audit entry missing the reason: %s", en.Data)
 		}
 	}
 	if !found {
 		t.Fatal("telegram.actor_unverified entry not found in the audit trail")
+	}
+}
+
+// TestVerifyTelegramActorAcceptsUsernameChatUnverified covers a review
+// finding (P1, round 2): the first fix only caught a negative (group) chat
+// id — a channel address given as a Telegram chat username (e.g.
+// "@opsroom", also a valid Bot API chat_id, and not numeric at all) still
+// took the strict path and was refused, including for the real assignee.
+// Any address that is not a plain positive integer must be unverifiable,
+// not just a negative one.
+func TestVerifyTelegramActorAcceptsUsernameChatUnverified(t *testing.T) {
+	fake := &fakeNotifier{}
+	svc, _ := newTestService(t, fake)
+	e := mustEvent(t, svc, 40*time.Hour)
+	p, err := svc.AddPerson("ops-team", TrustRespond, []Address{{Kind: "telegram", To: "@opsroom"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Assign(e.ID, p.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	confirmURL, _, err := svc.GenerateLinks(e.ID, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := strings.TrimPrefix(confirmURL, "http://test.local/a/")
+
+	if err := svc.VerifyTelegramActor(token, "555111222"); err != nil {
+		t.Fatalf("VerifyTelegramActor(@opsroom member) = %v, want nil (unverified, not refused)", err)
+	}
+	if auditCount(t, svc, "telegram.actor_mismatch") != 0 {
+		t.Fatal("a @opsroom press must never be audited as a mismatch")
+	}
+	if auditCount(t, svc, "telegram.actor_unverified") != 1 {
+		t.Fatal("a @opsroom press must be audited as unverified")
 	}
 }

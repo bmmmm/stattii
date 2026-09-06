@@ -155,12 +155,14 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
   landing in a group chat let any member answer as the assignee. Fixed by
   comparing `callback_query.from.id` against the person's stored telegram
   chat id — which for a private bot chat equals that person's own user id,
-  so this only verifies **private chats**. A channel configured as a
-  group/supergroup (negative chat id) cannot be checked this way at all —
-  the group's id never equals a member's own — so it is applied unverified
-  rather than refused (refusing would silently brick a working config,
-  including for the real assignee), and marked `unverified: group chat`
-  in the audit trail instead.
+  so this only verifies **private chats**, and only when that id is a
+  plain positive integer. A channel given as a negative group/supergroup
+  id, or as a chat username (`@opsroom` — also a valid Bot API chat_id,
+  and the edge the first fix missed: it still took the strict path and
+  was refused), never equals a member's own from.id, so it is applied
+  unverified rather than refused (refusing would silently brick a working
+  config, including for the real assignee), and marked
+  `unverified: not a private chat id` in the audit trail instead.
 - **Propagation merged every transaction an event ever had** (#7): cancel,
   reinstate, cancel again summed all three fan-outs into one
   `{total, delivered, ...}`, so "complete" was a statement about their

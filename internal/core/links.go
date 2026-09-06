@@ -5,7 +5,7 @@ package core
 import (
 	"errors"
 	"fmt"
-	"strings"
+	"strconv"
 	"time"
 )
 
@@ -205,16 +205,19 @@ func (s *Service) ApplyAction(token, reason string) (ActionView, error) {
 // matches, while a press coming through someone else's private chat never
 // does.
 //
-// A channel configured as a group/supergroup chat (Telegram gives those a
-// negative id, e.g. -100…) cannot be checked this way at all: the group's
-// own chat id never equals any individual member's user id, so every press
-// would mismatch, including the assignee's own — turning a working config
-// into permanent, silent refusals (review finding, P1; #6 itself names
-// this exact configuration as the threat, but a real assignee still needs
-// to be able to answer). Rather than break that setup, a negative channel
-// skips the identity check and is applied unverified: recorded as such in
-// the audit trail, never silently. Only positive (private-chat) ids get
-// the strict check.
+// A channel address that is not a plain positive integer cannot be
+// checked this way at all: that shape is Telegram's own id for a private
+// one-on-one bot chat, and only there does it equal that person's own
+// user id. A negative id (group/supergroup) or a chat username (e.g.
+// "@opsroom", also valid as a Bot API chat_id) never equals any individual
+// member's from.id, so every press would mismatch, including the
+// assignee's own — turning a working config into permanent, silent
+// refusals (review findings, P1: the first pass only caught the negative
+// case and still refused a username address the same way). Rather than
+// break that setup, such a channel skips the identity check and is
+// applied unverified: recorded as such in the audit trail, never
+// silently. Only a positive numeric (private-chat) id gets the strict
+// check.
 //
 // Never mutates; every outcome is audited. Called before ApplyAction, not
 // folded into it: every other caller of ApplyAction (the HTTP link
@@ -226,7 +229,7 @@ func (s *Service) VerifyTelegramActor(token, fromID string) error {
 	if err != nil {
 		return err
 	}
-	groupChannel := false
+	unverifiable := false
 	for _, ch := range p.Channels {
 		if ch.Kind != "telegram" {
 			continue
@@ -234,14 +237,14 @@ func (s *Service) VerifyTelegramActor(token, fromID string) error {
 		if ch.To == fromID {
 			return nil
 		}
-		if strings.HasPrefix(ch.To, "-") {
-			groupChannel = true
+		if !isPrivateChatID(ch.To) {
+			unverifiable = true
 		}
 	}
-	if groupChannel {
+	if unverifiable {
 		s.auditLocked("telegram.actor_unverified", map[string]any{
 			"event_id": e.ID, "person_id": p.ID, "from_id": fromID,
-			"reason": "unverified: group chat",
+			"reason": "unverified: not a private chat id",
 		})
 		return nil
 	}
@@ -249,4 +252,15 @@ func (s *Service) VerifyTelegramActor(token, fromID string) error {
 		"event_id": e.ID, "person_id": p.ID, "from_id": fromID,
 	})
 	return ErrWrongActor
+}
+
+// isPrivateChatID reports whether a stored telegram channel address is a
+// plain positive integer — the only shape a private one-on-one bot chat's
+// id ever takes, and the only shape callback_query.from.id (also always a
+// positive integer) could ever equal. Everything else — a negative
+// group/supergroup id, a "@username" alias, or anything malformed — is
+// not comparable to from.id at all, review finding P1 (round 2).
+func isPrivateChatID(to string) bool {
+	n, err := strconv.ParseInt(to, 10, 64)
+	return err == nil && n > 0
 }

@@ -88,12 +88,13 @@ it, because a format rule is not allowed to cancel anything.
 On Telegram, reminders carry inline buttons: one tap on ✅/❌ answers
 directly in the chat (the server long-polls the Bot API; no public webhook
 needed). The links in the message text remain as fallback. A button press
-is checked against the assignee's own chat id **in a private chat only**
-— a channel pointed at a group/supergroup (a negative chat id) cannot be
-checked this way (the group's id never equals any member's own id) and is
-applied unverified instead of refused outright, so a shared team chat
-keeps working; that press is still marked `unverified: group chat` in the
-audit log.
+is checked against the assignee's own chat id **only when that channel is
+a plain positive chat id** — Telegram's own shape for a private one-on-one
+bot chat. A channel given as a group/supergroup id (negative) or a chat
+username (e.g. `@opsroom`) cannot be checked this way at all (neither ever
+equals an individual member's own id) and is applied unverified instead of
+refused outright, so a shared team chat keeps working; that press is still
+marked `unverified: not a private chat id` in the audit log.
 
 ## Cancellation propagation
 
