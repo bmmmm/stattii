@@ -316,10 +316,13 @@ type adminEventData struct {
 	Propagation core.PropagationStatus
 	People      []core.Person
 	Invite      core.InviteStatus
-	// NobodyTold: the last propagation transaction enqueued nothing.
-	// Derived from the event's persisted fan-out record, not from
-	// Propagation.Total — pruning empties the outbox of old, correctly
-	// propagated cancellations too.
+	// NobodyTold mirrors Propagation.Empty — the one place that already
+	// derives it from the event's persisted fan-out record, not from
+	// Propagation.Total alone: pruning empties the outbox of old,
+	// correctly propagated cancellations too. Kept as its own field
+	// (rather than reading Propagation.Empty in the template) only
+	// because the template also needs it before the "Propagation" card,
+	// which is itself gated on Total.
 	NobodyTold bool
 }
 
@@ -337,14 +340,17 @@ func (s *Server) adminEvent(w http.ResponseWriter, r *http.Request) {
 		s.renderAdminError(w, core.ErrNotFound)
 		return
 	}
-	d := adminEventData{CSRF: s.csrfFor(r), Ev: *found, People: s.svc.People(),
-		NobodyTold: !found.Event.FanOutAt.IsZero() && found.Event.FanOutCount == 0}
+	d := adminEventData{CSRF: s.csrfFor(r), Ev: *found, People: s.svc.People()}
 	outbox := s.svc.OutboxItems(false)
 	responses := s.svc.Responses(id)
 	for _, a := range found.Assignees {
 		d.Tracks = append(d.Tracks, adminTrack{A: a, Entries: timelineFor(id, a.PersonID, outbox, responses, s.svc.OutboxState)})
 	}
+	// Single source for "was this empty": Propagation.Empty (see
+	// outbox.go) — NobodyTold used to recompute FanOutAt/FanOutCount
+	// itself, the same check done twice (review finding, P2).
 	d.Propagation, _ = s.svc.Propagation(id)
+	d.NobodyTold = d.Propagation.Empty
 	// Read-only: the invite link is minted by the button below, never by
 	// rendering this page — GET never mutates here either.
 	d.Invite, _ = s.svc.Invite(id)

@@ -150,3 +150,28 @@ Focus decided 2026-08-12: **email + links first, Telegram last.**
   RSVP validates addresses strictly (reject now, never fail forever).
   Guests are deliberately not People — no portal token, no trust level,
   and the reminder/deadline scheduler never sees them.
+- **Telegram button clicks were never checked against who clicked** (#6):
+  any tap applied the token's action for whoever pressed it, so a reminder
+  landing in a group chat let any member answer as the assignee. Fixed by
+  comparing `callback_query.from.id` against the person's stored telegram
+  chat id — which for a private bot chat equals that person's own user id,
+  so this only verifies **private chats**. A channel configured as a
+  group/supergroup (negative chat id) cannot be checked this way at all —
+  the group's id never equals a member's own — so it is applied unverified
+  rather than refused (refusing would silently brick a working config,
+  including for the real assignee), and marked `unverified: group chat`
+  in the audit trail instead.
+- **Propagation merged every transaction an event ever had** (#7): cancel,
+  reinstate, cancel again summed all three fan-outs into one
+  `{total, delivered, ...}`, so "complete" was a statement about their
+  union, not about the cancellation actually in effect. Fixed by stamping
+  every `fanOutLocked` call with its own transaction id and reporting only
+  the latest (`Event.FanOutTxnID`) — at the cost of an older transaction's
+  unresolved failure disappearing from this one number once a newer
+  transaction supersedes it (it still escalates through its own stuck-item
+  admin mail). An empty fan-out (zero targets) now says so explicitly via
+  `empty`, and `complete` stays `false` for it. Events fanned out before
+  `FanOutTxnID` (or even `FanOutAt`) existed fall back to the old
+  purpose-only filter for their own history — an early return on
+  `FanOutAt.IsZero()` briefly dropped that history's delivery proof
+  entirely (caught in review before it shipped).

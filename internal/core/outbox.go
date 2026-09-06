@@ -127,6 +127,12 @@ func (s *Service) notifyAdminLocked(subject, body string) {
 // propagation transaction (one cancel, move, or reinstate) — never a
 // merge of an event's whole history. Cancel, reinstate, cancel again is
 // three transactions; only the latest is reported, matching FanOutTxnID.
+// Trade-off, accepted: a newer transaction hides an older one's unresolved
+// failures (reinstate right after a cancel whose deliveries were still
+// exhausted-failed reports 0 failed, not 1) — that failure was real and
+// stays escalated through its own path (tickOutboxLocked's stuck-item
+// mail, unaffected by this type), it simply stops being what this one
+// number is about once a newer transaction supersedes it.
 type PropagationStatus struct {
 	EventID   string `json:"event_id"`
 	Total     int    `json:"total"`
@@ -134,13 +140,12 @@ type PropagationStatus struct {
 	Pending   int    `json:"pending"`
 	Failed    int    `json:"failed"`
 	Complete  bool   `json:"complete"`
-	// Empty marks a transaction that enqueued zero items — nobody to
-	// tell, not "still in progress". Derived from the event's own
-	// FanOutCount (see nobodyToldLocked), never from counting Items:
-	// delivered items get pruned, and an old, fully-pruned transaction
-	// must not read as empty. Complete deliberately stays false here —
-	// an empty fan-out is the alarm this product exists to raise, and
-	// must never look like "done" (invariant 3).
+	// Empty marks a transaction that ran and enqueued zero items — nobody
+	// to tell, not "still in progress" and not "never propagated" (that
+	// last case is FanOutAt.IsZero(), and Empty stays its zero value,
+	// false, for it). Complete deliberately stays false when Empty is
+	// true — an empty fan-out is the alarm this product exists to raise,
+	// and must never look like "done" (invariant 3).
 	Empty bool         `json:"empty"`
 	Items []OutboxItem `json:"items"`
 }
@@ -153,11 +158,11 @@ func (s *Service) Propagation(eventID string) (PropagationStatus, error) {
 		return PropagationStatus{}, ErrNotFound
 	}
 	ps := PropagationStatus{EventID: eventID}
-	if e.FanOutAt.IsZero() {
-		// No propagation transaction has run for this event yet.
-		return ps, nil
-	}
-	ps.Empty = e.FanOutCount == 0
+	// No early return on FanOutAt/FanOutCount here: an event fanned out
+	// before those fields (or TxnID) existed still has real outbox rows
+	// with a matching Purpose, and bailing out before the loop below
+	// dropped that proof entirely — reported as if nothing was ever
+	// sent, on events that were fully delivered (review finding, P1).
 	for _, o := range s.state.Outbox {
 		if o.EventID != eventID {
 			continue
@@ -184,6 +189,13 @@ func (s *Service) Propagation(eventID string) (PropagationStatus, error) {
 			ps.Pending++
 		}
 	}
+	// FanOutCount==0 alone is not proof of an empty fan-out: a legacy
+	// event fanned out before FanOutCount existed also reads 0 there
+	// without meaning anything, and requiring Total==0 too keeps that
+	// case (rows found above) from reporting Empty:true alongside a
+	// nonzero Total (review finding, P2). FanOutAt.IsZero() keeps
+	// "never propagated" out of Empty entirely.
+	ps.Empty = !e.FanOutAt.IsZero() && e.FanOutCount == 0 && ps.Total == 0
 	ps.Complete = ps.Total > 0 && ps.Delivered == ps.Total
 	return ps, nil
 }

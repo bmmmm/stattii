@@ -202,19 +202,7 @@ func cmdServe(args []string) {
 	if tgToken != "" {
 		poller := &channel.TelegramPoller{
 			Token: tgToken,
-			Apply: func(token, fromID string) (string, error) {
-				if err := svc.VerifyTelegramActor(token, fromID); err != nil {
-					return "", err
-				}
-				v, err := svc.ApplyAction(token, "")
-				if err != nil {
-					return "", err
-				}
-				if v.Action == core.ActionConfirm {
-					return "Recorded: the event takes place.", nil
-				}
-				return "Recorded: the event is cancelled — everyone is being notified.", nil
-			},
+			Apply: telegramApply(svc),
 		}
 		bg.Add(1)
 		go func() {
@@ -262,6 +250,28 @@ func cmdServe(args []string) {
 	bg.Wait()
 	if fatal != nil {
 		log.Fatalf("stattii: %v", fatal)
+	}
+}
+
+// telegramApply builds the TelegramPoller.Apply callback: verify the
+// presser against the link's person, then apply the action. Pulled out of
+// cmdServe as its own function so the join can be tested directly — the
+// closure inlined in cmdServe cannot be exercised without a live server,
+// and a review found that deleting the VerifyTelegramActor call there kept
+// the test suite green (P2).
+func telegramApply(svc *core.Service) func(token, fromID string) (string, error) {
+	return func(token, fromID string) (string, error) {
+		if err := svc.VerifyTelegramActor(token, fromID); err != nil {
+			return "", err
+		}
+		v, err := svc.ApplyAction(token, "")
+		if err != nil {
+			return "", err
+		}
+		if v.Action == core.ActionConfirm {
+			return "Recorded: the event takes place.", nil
+		}
+		return "Recorded: the event is cancelled — everyone is being notified.", nil
 	}
 }
 

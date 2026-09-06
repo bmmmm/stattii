@@ -87,7 +87,13 @@ it, because a format rule is not allowed to cancel anything.
 
 On Telegram, reminders carry inline buttons: one tap on ✅/❌ answers
 directly in the chat (the server long-polls the Bot API; no public webhook
-needed). The links in the message text remain as fallback.
+needed). The links in the message text remain as fallback. A button press
+is checked against the assignee's own chat id **in a private chat only**
+— a channel pointed at a group/supergroup (a negative chat id) cannot be
+checked this way (the group's id never equals any member's own id) and is
+applied unverified instead of refused outright, so a shared team chat
+keeps working; that press is still marked `unverified: group chat` in the
+audit log.
 
 ## Cancellation propagation
 
@@ -97,8 +103,15 @@ assignees, and party guests who left an address, through a persistent
 outbox with retries and exponential backoff.
 
 ```sh
-stattii event propagation <id>   # {total, delivered, pending, failed, complete}
+stattii event propagation <id>   # {total, delivered, pending, failed, complete, empty}
 ```
+
+This reports the **latest** transaction only: cancel, reinstate, cancel
+again is three separate transactions, and only the last one's numbers show
+here (an older transaction's unresolved failure is not lost — it still
+escalates through the stuck-item admin mail, just not through this
+count). `empty` marks a transaction that reached nobody; `complete` stays
+`false` for it — an empty fan-out is the alarm below, never a "done".
 
 Items undelivered after `--escalate-after` (default 10 min) page the admin
 (`STATTII_ADMIN_NOTIFY=telegram:<chat-id>` or `email:<addr>`); inspect and

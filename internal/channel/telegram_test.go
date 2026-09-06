@@ -181,6 +181,68 @@ func TestPollerPassesCallbackFromID(t *testing.T) {
 	}
 }
 
+// TestPollerRendersWrongActorWithoutStalePrefix covers a review finding
+// (P2): core.ErrWrongActor used to get the same "This action is no longer
+// possible: " prefix as an expired/gone link, which misdescribes a press
+// that was refused for being the wrong person as one that simply expired.
+// core.ErrWrongActor's own text must render as-is.
+func TestPollerRendersWrongActorWithoutStalePrefix(t *testing.T) {
+	var served atomic.Bool
+	answered := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getUpdates"):
+			if r.URL.Query().Get("offset") == "-1" {
+				w.Write([]byte(`{"ok":true,"result":[]}`))
+				return
+			}
+			if served.CompareAndSwap(false, true) {
+				w.Write([]byte(`{"ok":true,"result":[{"update_id":11,"callback_query":{"id":"cb-wrong","data":"tok-wrong"}}]}`))
+				return
+			}
+			w.Write([]byte(`{"ok":true,"result":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/answerCallbackQuery"):
+			raw, _ := io.ReadAll(r.Body)
+			var in struct {
+				Text string `json:"text"`
+			}
+			json.Unmarshal(raw, &in)
+			select {
+			case answered <- in.Text:
+			default:
+			}
+			w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { <-done }()
+	defer cancel()
+	p := &TelegramPoller{
+		Token:   "TOK",
+		BaseURL: srv.URL,
+		Logf:    t.Logf,
+		Apply: func(token, _ string) (string, error) {
+			return "", core.ErrWrongActor
+		},
+	}
+	go func() {
+		p.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case text := <-answered:
+		if text != core.ErrWrongActor.Error() {
+			t.Fatalf("answer text = %q, want the bare error %q (no stale-link prefix)", text, core.ErrWrongActor.Error())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("poller never answered the callback")
+	}
+}
+
 // TestPollerSeedOffsetDropsStaleUpdate covers the restart-replay fix: a
 // callback query that was already queued at Telegram before Run starts
 // (e.g. a cancel-click on an event later reinstated) must never reach

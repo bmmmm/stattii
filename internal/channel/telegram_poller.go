@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/bmmmm/stattii/internal/core"
 )
 
 // TelegramPoller long-polls getUpdates and turns inline-button callbacks
@@ -84,7 +87,14 @@ func (p *TelegramPoller) Run(ctx context.Context) {
 				continue
 			}
 			text, err := p.Apply(u.CallbackQuery.Data, strconv.FormatInt(u.CallbackQuery.From.ID, 10))
-			if err != nil {
+			switch {
+			case err == nil:
+				// text is already the caller's result.
+			case errors.Is(err, core.ErrWrongActor):
+				// Not stale or gone — refused for a different person.
+				// "no longer possible" would misdescribe it as expired.
+				text = err.Error()
+			default:
 				text = "This action is no longer possible: " + err.Error()
 			}
 			if err := p.answer(ctx, u.CallbackQuery.ID, text); err != nil {
