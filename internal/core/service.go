@@ -437,17 +437,23 @@ func (s *Service) moveLocked(eventID string, start, end time.Time, note, actor s
 // communication. Returns the number of messages enqueued and records it
 // on the event: a propagation that reached nobody is an alarm, and the
 // panel must be able to raise it long after the outbox was pruned.
+//
+// Every item enqueued here carries the same fresh TxnID, and the event
+// remembers it as FanOutTxnID — a status flip is one transaction, however
+// many recipients it fans out to, and cancel/reinstate/cancel again on the
+// same event must never be counted as one merged propagation (#7).
 func (s *Service) fanOutLocked(e *Event, purpose, subject, body string) int {
+	txnID := NewID("tx")
 	n := 0
 	for _, b := range s.state.Broadcasts {
 		s.enqueueLocked(OutboxItem{
-			EventID: e.ID, Purpose: purpose, Kind: b.Kind, To: b.To,
+			EventID: e.ID, Purpose: purpose, TxnID: txnID, Kind: b.Kind, To: b.To,
 			Subject: subject, Body: body,
 		})
 		n++
 	}
 	for _, p := range s.state.Assignees(e.ID) {
-		n += len(s.enqueueToPersonLocked(p, OutboxItem{EventID: e.ID, Purpose: purpose, Subject: subject, Body: body}))
+		n += len(s.enqueueToPersonLocked(p, OutboxItem{EventID: e.ID, Purpose: purpose, TxnID: txnID, Subject: subject, Body: body}))
 	}
 	// Party guests who left an address are outward recipients like any
 	// other: a guest we cannot tell about a cancellation is exactly the
@@ -464,13 +470,14 @@ func (s *Service) fanOutLocked(e *Event, purpose, subject, body string) int {
 		}
 		seen[key] = true
 		s.enqueueLocked(OutboxItem{
-			EventID: e.ID, GuestID: g.ID, Purpose: purpose,
+			EventID: e.ID, GuestID: g.ID, Purpose: purpose, TxnID: txnID,
 			Kind: "email", To: g.Email, Subject: subject, Body: body,
 		})
 		n++
 	}
 	e.FanOutAt = s.now()
 	e.FanOutCount = n
+	e.FanOutTxnID = txnID
 	return n
 }
 

@@ -62,6 +62,10 @@ type Event struct {
 	// outbox, whose delivered items get pruned after OutboxRetention.
 	FanOutAt    time.Time `json:"fan_out_at,omitzero"`
 	FanOutCount int       `json:"fan_out_count,omitempty"`
+	// FanOutTxnID identifies that same last transaction's outbox rows
+	// (OutboxItem.TxnID) so Propagation can report on it alone — cancel,
+	// reinstate, cancel again must not merge into one count (#7).
+	FanOutTxnID string `json:"fan_out_txn_id,omitempty"`
 	// Set on events imported from the calendar source: the series UID
 	// and the stable per-occurrence key the sync matches on.
 	SourceUID string `json:"source_uid,omitempty"`
@@ -271,9 +275,15 @@ type OutboxItem struct {
 	PersonID string `json:"person_id,omitempty"`
 	// GuestID marks items addressed to a party guest — never reuse PersonID
 	// for that, the admin timeline joins on it and would mis-attribute.
-	GuestID     string            `json:"guest_id,omitempty"`
-	Purpose     string            `json:"purpose"` // "reminder" | "vanished" | "cancellation" | "moved" | "reinstated" | "proposal" | "escalation" | "webhook"
-	Kind        string            `json:"kind"`    // channel kind
+	GuestID string `json:"guest_id,omitempty"`
+	Purpose string `json:"purpose"` // "reminder" | "vanished" | "cancellation" | "moved" | "reinstated" | "proposal" | "escalation" | "webhook"
+	// TxnID groups every item one fanOutLocked call enqueued (a single
+	// cancel/move/reinstate transaction), so Propagation can report on
+	// one transaction instead of every transaction an event ever had
+	// merged together. Blank for items enqueued outside fanOutLocked
+	// (reminders, vanished asks, escalations, webhooks).
+	TxnID       string            `json:"txn_id,omitempty"`
+	Kind        string            `json:"kind"` // channel kind
 	To          string            `json:"to"`
 	Subject     string            `json:"subject"`
 	Body        string            `json:"body"`

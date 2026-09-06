@@ -123,27 +123,54 @@ func (s *Service) notifyAdminLocked(subject, body string) {
 	})
 }
 
-// PropagationStatus answers "is the cancellation actually out?".
+// PropagationStatus answers "is the cancellation actually out?" for ONE
+// propagation transaction (one cancel, move, or reinstate) — never a
+// merge of an event's whole history. Cancel, reinstate, cancel again is
+// three transactions; only the latest is reported, matching FanOutTxnID.
 type PropagationStatus struct {
-	EventID   string       `json:"event_id"`
-	Total     int          `json:"total"`
-	Delivered int          `json:"delivered"`
-	Pending   int          `json:"pending"`
-	Failed    int          `json:"failed"`
-	Complete  bool         `json:"complete"`
-	Items     []OutboxItem `json:"items"`
+	EventID   string `json:"event_id"`
+	Total     int    `json:"total"`
+	Delivered int    `json:"delivered"`
+	Pending   int    `json:"pending"`
+	Failed    int    `json:"failed"`
+	Complete  bool   `json:"complete"`
+	// Empty marks a transaction that enqueued zero items — nobody to
+	// tell, not "still in progress". Derived from the event's own
+	// FanOutCount (see nobodyToldLocked), never from counting Items:
+	// delivered items get pruned, and an old, fully-pruned transaction
+	// must not read as empty. Complete deliberately stays false here —
+	// an empty fan-out is the alarm this product exists to raise, and
+	// must never look like "done" (invariant 3).
+	Empty bool         `json:"empty"`
+	Items []OutboxItem `json:"items"`
 }
 
 func (s *Service) Propagation(eventID string) (PropagationStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state.Event(eventID) == nil {
+	e := s.state.Event(eventID)
+	if e == nil {
 		return PropagationStatus{}, ErrNotFound
 	}
 	ps := PropagationStatus{EventID: eventID}
+	if e.FanOutAt.IsZero() {
+		// No propagation transaction has run for this event yet.
+		return ps, nil
+	}
+	ps.Empty = e.FanOutCount == 0
 	for _, o := range s.state.Outbox {
-		if o.EventID != eventID ||
-			(o.Purpose != "cancellation" && o.Purpose != "moved" && o.Purpose != "reinstated") {
+		if o.EventID != eventID {
+			continue
+		}
+		if e.FanOutTxnID != "" {
+			if o.TxnID != e.FanOutTxnID {
+				continue
+			}
+		} else if o.Purpose != "cancellation" && o.Purpose != "moved" && o.Purpose != "reinstated" {
+			// A pre-upgrade event fanned out before TxnID existed: fall
+			// back to the old purpose-only filter for it (still subject
+			// to the original merge-across-transactions limitation) —
+			// its next cancel/move/reinstate stamps a real TxnID.
 			continue
 		}
 		ps.Total++
