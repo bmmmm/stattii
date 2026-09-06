@@ -24,6 +24,9 @@ type Message struct {
 }
 
 // Notifier delivers messages; implemented by the channel registry.
+// Send runs with the service's mutex free and can therefore be entered
+// from several goroutines at once — an implementation must be safe for
+// concurrent use.
 type Notifier interface {
 	Send(kind, to string, m Message) error
 }
@@ -112,6 +115,14 @@ type Service struct {
 	// problems once in this process (see noteChannelProblemsLocked).
 	// Same deal — in-memory, a restart looks again.
 	channelsScanned bool
+	// sending: outbox ids whose send is currently out with the lock
+	// released, so a concurrent pass skips them instead of sending them
+	// twice. The value counts the re-arms that happened WHILE the send
+	// was out (see RetryOutbox): non-zero means the operator has since
+	// touched the item and the returning result must not overwrite that.
+	// In-memory only — a crash mid-send takes the marker with the process
+	// and the item is simply attempted again.
+	sending map[string]int
 }
 
 func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {
@@ -124,12 +135,13 @@ func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {
 		return nil, err
 	}
 	return &Service{
-		store:  store,
-		state:  st,
-		cfg:    cfg,
-		notify: notify,
-		now:    func() time.Time { return time.Now().UTC() },
-		logf:   log.Printf,
+		store:   store,
+		state:   st,
+		cfg:     cfg,
+		notify:  notify,
+		sending: map[string]int{},
+		now:     func() time.Time { return time.Now().UTC() },
+		logf:    log.Printf,
 	}, nil
 }
 

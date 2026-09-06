@@ -20,8 +20,9 @@ import (
 // offers it; PLAIN auth is only attempted once the session is encrypted (or
 // the server is localhost). The whole session — dial, EHLO, optional
 // STARTTLS, auth, and the message itself — is bounded by timeouts so a
-// stalling peer cannot block the caller (and the service's global mutex)
-// forever.
+// stalling peer cannot block the caller forever. (Since deliveries run
+// outside the service's mutex, that is the delivery pass's own goroutine
+// — not the whole service.)
 type Email struct {
 	Host string
 	Port string

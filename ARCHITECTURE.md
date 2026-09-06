@@ -114,12 +114,17 @@ The difference between simple and naive is whether the limits are
 documented decisions. These are the decisions:
 
 - **It does not scale, on purpose.** Every mutation rewrites the whole
-  state file, every lookup is O(n), and sends run under the global lock
-  (bounded by per-session timeouts). At club scale — hundreds of events,
-  dozens of people — this is unmeasurable and buys a system with no
-  cache-coherency, no migration, and no race-condition class at all. At
-  ten thousand guests it is the first thing to break; the `Store`
-  interface is the planned exit.
+  state file and every lookup is O(n). At club scale — hundreds of
+  events, dozens of people — this is unmeasurable and buys a system with
+  no cache-coherency and no migration. At ten thousand guests it is the
+  first thing to break; the `Store` interface is the planned exit. The
+  one thing the single mutex may not do is wait on the network: sends
+  used to run under it, so one hanging peer stalled both listeners for
+  its whole timeout. A delivery pass now snapshots the due items under
+  the lock, sends without it, and re-acquires to book the results —
+  in-flight items are marked so a concurrent pass cannot send them
+  twice, and a booked result never overwrites state that changed while
+  the send was out (a `Retry` from the panel wins).
 - **Guest identity is just a name.** Right calibration for a shared
   party link among acquaintances; too weak for public events. The sharp
   edges are filed off — write-once addresses, address-deduped fan-out,

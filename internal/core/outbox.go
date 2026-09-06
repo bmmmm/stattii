@@ -210,6 +210,13 @@ const confirmGrace = time.Hour
 // Tick runs one scheduler pass: due reminders, missed deadlines, outbox
 // delivery with backoff, and escalation of stuck items.
 //
+// The pass is split around s.mu on purpose: state is read and written
+// locked, the sends themselves run unlocked (see deliver). A peer that
+// hangs until its timeout would otherwise serialize both HTTP listeners
+// behind the mutex for the whole pass. The price is a second state.json
+// write per delivering tick — the bookkeeping cannot wait for the next
+// one, or a kill between send and persist re-sends everything.
+//
 // The reminder pass runs before the deadline pass and the two never act
 // on the same event in one tick: the deadline waits for a sent ask plus
 // confirmGrace whenever someone reachable is assigned, and the
@@ -217,6 +224,13 @@ const confirmGrace = time.Hour
 // DeadlineLead) while the deadline fires from start-DeadlineLead on —
 // disjoint windows, no cross-pass flag to keep in sync.
 func (s *Service) Tick(now time.Time) {
+	s.recordDeliveries(now, s.deliver(s.tickLocked(now)))
+}
+
+// tickLocked is the locked half of a pass — everything that reads or
+// writes state, ending with the selection of the due outbox items it
+// hands back for an unlocked send.
+func (s *Service) tickLocked(now time.Time) []outboxAttempt {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	changed := false
@@ -232,7 +246,8 @@ func (s *Service) Tick(now time.Time) {
 	if s.tickDeadlinesLocked(now) {
 		changed = true
 	}
-	if s.tickOutboxLocked(now) {
+	attempts, escalated := s.collectOutboxLocked(now)
+	if escalated {
 		changed = true
 	}
 	if s.pruneOutboxLocked(now) {
@@ -241,6 +256,7 @@ func (s *Service) Tick(now time.Time) {
 	if changed {
 		s.saveLocked()
 	}
+	return attempts
 }
 
 // pruneOutboxLocked drops delivered items whose story is over: delivery
@@ -436,16 +452,37 @@ func (s *Service) tickDeadlinesLocked(now time.Time) bool {
 	return changed
 }
 
-func (s *Service) tickOutboxLocked(now time.Time) bool {
+// outboxAttempt is one due item copied out from under the lock: the
+// send must not read through into state while the mutex is free.
+// attempts is the item's attempt count as of the collect — a different
+// value at booking time means the item was re-armed mid-flight.
+type outboxAttempt struct {
+	id, eventID, purpose, kind, to string
+	attempts                       int
+	msg                            Message
+}
+
+// outboxResult is what one attempt came back with.
+type outboxResult struct {
+	attempt outboxAttempt
+	err     error
+}
+
+// collectOutboxLocked escalates stuck items and picks the due ones for
+// this pass, marking them in flight so a concurrent pass (SendTest
+// racing the scheduler) cannot send them a second time. The bool says
+// whether state changed.
+func (s *Service) collectOutboxLocked(now time.Time) ([]outboxAttempt, bool) {
 	changed := false
 	// Escalations are collected and enqueued after the loop: enqueueLocked
 	// appends to the outbox, and an append mid-loop can reallocate the
-	// backing array — every later write through o (Attempts, DeliveredAt)
-	// would then land in the stale copy and the item would be re-sent on
-	// every tick. They go out with the next pass, one interval later.
+	// backing array — every later write through o (EscalatedAt) would then
+	// land in the stale copy and the item would escalate on every tick.
+	// They go out with the next pass, one interval later.
 	type stuck struct{ subject, body string }
 	var escalations []stuck
-	for i := 0; i < len(s.state.Outbox); i++ {
+	var attempts []outboxAttempt
+	for i := range s.state.Outbox {
 		o := &s.state.Outbox[i]
 		if o.Delivered() {
 			continue
@@ -460,24 +497,120 @@ func (s *Service) tickOutboxLocked(now time.Time) bool {
 			})
 			changed = true
 		}
+		if _, out := s.sending[o.ID]; out {
+			continue // still out with an earlier pass
+		}
 		if o.Attempts >= s.cfg.MaxAttempts || now.Before(o.NextAttempt) {
 			continue
 		}
-		err := s.notify.Send(o.Kind, o.To, Message{Subject: o.Subject, Body: o.Body, Buttons: o.Buttons, Headers: o.Headers})
-		o.Attempts++
-		changed = true
-		if err == nil {
-			o.DeliveredAt = now
-			o.LastError = ""
-			s.auditLocked("delivery.ok", map[string]any{"outbox_id": o.ID, "event_id": o.EventID, "purpose": o.Purpose, "kind": o.Kind, "to": o.To, "attempts": o.Attempts})
-			continue
-		}
-		o.LastError = err.Error()
-		o.NextAttempt = now.Add(s.cfg.RetryDelay * time.Duration(1<<min(o.Attempts-1, 4)))
-		s.auditLocked("delivery.fail", map[string]any{"outbox_id": o.ID, "event_id": o.EventID, "purpose": o.Purpose, "kind": o.Kind, "to": o.To, "attempts": o.Attempts, "error": err.Error()})
+		s.sending[o.ID] = 0
+		attempts = append(attempts, outboxAttempt{
+			id: o.ID, eventID: o.EventID, purpose: o.Purpose,
+			kind: o.Kind, to: o.To, attempts: o.Attempts, msg: messageOf(o),
+		})
 	}
 	for _, e := range escalations {
 		s.notifyAdminLocked(e.subject, e.body)
 	}
-	return changed
+	return attempts, changed
+}
+
+// messageOf copies an item's payload for a send that runs unlocked —
+// the slice and the map must not stay aliased into state.
+func messageOf(o *OutboxItem) Message {
+	m := Message{Subject: o.Subject, Body: o.Body, Buttons: append([]Button(nil), o.Buttons...)}
+	if o.Headers != nil {
+		m.Headers = make(map[string]string, len(o.Headers))
+		for k, v := range o.Headers {
+			m.Headers[k] = v
+		}
+	}
+	return m
+}
+
+// deliver runs the sends with s.mu free — the whole point of the split:
+// an SMTP or Telegram peer that blocks until its timeout stalls this
+// goroutine only, not every operation queued behind the mutex.
+func (s *Service) deliver(attempts []outboxAttempt) []outboxResult {
+	if len(attempts) == 0 {
+		return nil
+	}
+	results := make([]outboxResult, 0, len(attempts))
+	for _, a := range attempts {
+		results = append(results, outboxResult{attempt: a, err: s.send(a)})
+	}
+	return results
+}
+
+// send is one unlocked delivery attempt. A channel that panics becomes
+// a failed attempt rather than a lost item: the scheduler's goroutine
+// would take the process down with it, but net/http recovers a handler
+// panic — and SendTest and the tick endpoint deliver from one, where a
+// panicking sender would leave its item marked in flight forever.
+func (s *Service) send(a outboxAttempt) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("channel %s panicked: %v", a.kind, r)
+		}
+	}()
+	return s.notify.Send(a.kind, a.to, a.msg)
+}
+
+// recordDeliveries books a finished pass. The outbox may have been
+// appended to, pruned or re-armed while the sends were out, so every
+// item is looked up by id again — never by the index it had at collect
+// time. The attempt is audited either way; what it is not allowed to do
+// is overwrite state that is newer than the send it reports.
+func (s *Service) recordDeliveries(now time.Time, results []outboxResult) {
+	if len(results) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for _, r := range results {
+		a := r.attempt
+		rearmed := s.sending[a.id] > 0
+		delete(s.sending, a.id)
+		fields := map[string]any{"outbox_id": a.id, "event_id": a.eventID, "purpose": a.purpose,
+			"kind": a.kind, "to": a.to, "attempts": a.attempts + 1}
+		o := s.outboxItemLocked(a.id)
+		if r.err == nil {
+			s.auditLocked("delivery.ok", fields)
+			if o == nil || o.Delivered() {
+				continue
+			}
+			o.Attempts = a.attempts + 1
+			o.DeliveredAt = now
+			o.LastError = ""
+			changed = true
+			continue
+		}
+		fields["error"] = r.err.Error()
+		s.auditLocked("delivery.fail", fields)
+		if o == nil || o.Delivered() || rearmed {
+			// Gone, delivered through another pass, or re-armed by the
+			// operator while this send was out: the failure is on record,
+			// but booking its backoff would silently undo that newer state.
+			// The re-arm is counted, not inferred from Attempts — a Retry
+			// on a queued item leaves that at 0 and would look untouched.
+			continue
+		}
+		o.Attempts = a.attempts + 1
+		o.LastError = r.err.Error()
+		o.NextAttempt = now.Add(s.cfg.RetryDelay * time.Duration(1<<min(o.Attempts-1, 4)))
+		changed = true
+	}
+	if changed {
+		s.saveLocked()
+	}
+}
+
+func (s *Service) outboxItemLocked(id string) *OutboxItem {
+	for i := range s.state.Outbox {
+		if s.state.Outbox[i].ID == id {
+			return &s.state.Outbox[i]
+		}
+	}
+	return nil
 }

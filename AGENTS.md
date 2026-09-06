@@ -86,6 +86,25 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    Time changes DO run the full move transaction (owner decision).
 10. **The source feed URL is user/project data** — config on the host,
    never committed anywhere, and never baked into tests.
+11. **Nothing waits on the network under `s.mu`.** A delivery pass
+   collects the due outbox items locked (`collectOutboxLocked`), sends
+   unlocked (`deliver`), and books the outcome locked
+   (`recordDeliveries`, by item id — indices go stale). Never call
+   `notify.Send` from a `…Locked` function again: one hanging peer would
+   stall both listeners for its full timeout. In-flight ids sit in
+   `Service.sending`, whose value counts mid-flight re-arms, so a
+   concurrent pass cannot send an item twice and a booked failure yields
+   to the operator's `RetryOutbox` (never inferred from `Attempts` — a
+   Retry on a queued item leaves that at 0). A sender that panics becomes
+   a failed attempt, not an item parked in flight forever: `net/http`
+   recovers handler panics, and `SendTest`/`tick` deliver from one.
+   Consequence for `channel`: `Sender.Send` is now called concurrently
+   and must be safe for it — hence the one shared `sendClient`. Guarded
+   by `TestDeliveryRunsOutsideTheLock`,
+   `TestRetryDuringAnInFlightSendSurvives`,
+   `TestAPanickingChannelIsAFailedAttempt`, and
+   `TestNotifySendHasOneCallerOnly`, which parses this package and fails
+   on a second call site whatever it is named.
 
 ## Build & test
 

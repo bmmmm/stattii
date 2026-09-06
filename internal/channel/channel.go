@@ -6,10 +6,19 @@ package channel
 
 import (
 	"fmt"
+	"net/http"
 	"sort"
+	"time"
 
 	"github.com/bmmmm/stattii/internal/core"
 )
+
+// sendClient is the HTTP client the outbound channels share. Package
+// level and built once, not lazily filled per sender: Send runs
+// concurrently since deliveries stopped happening under the service's
+// mutex, and two goroutines racing on such a field is a data race
+// whatever they write. http.Client itself is safe for concurrent use.
+var sendClient = &http.Client{Timeout: 10 * time.Second}
 
 // Sender delivers one message to one address of its kind.
 type Sender interface {

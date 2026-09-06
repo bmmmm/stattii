@@ -6,8 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"time"
 
 	"github.com/bmmmm/stattii/internal/core"
 )
@@ -16,7 +14,6 @@ import (
 type Telegram struct {
 	Token   string
 	BaseURL string // overridable for tests; default api.telegram.org
-	client  *http.Client
 }
 
 func (t *Telegram) Kind() string { return "telegram" }
@@ -28,9 +25,6 @@ func (t *Telegram) Send(to string, m core.Message) error {
 	base := t.BaseURL
 	if base == "" {
 		base = "https://api.telegram.org"
-	}
-	if t.client == nil {
-		t.client = &http.Client{Timeout: 10 * time.Second}
 	}
 	text := m.Body
 	if m.Subject != "" {
@@ -60,7 +54,7 @@ func (t *Telegram) Send(to string, m core.Message) error {
 	if err != nil {
 		return err
 	}
-	resp, err := t.client.Post(base+"/bot"+t.Token+"/sendMessage", "application/json", bytes.NewReader(payload))
+	resp, err := sendClient.Post(base+"/bot"+t.Token+"/sendMessage", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

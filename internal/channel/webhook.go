@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/bmmmm/stattii/internal/core"
 )
@@ -16,16 +15,11 @@ import (
 // Webhook POSTs the message body to the target URL. Used both for
 // subscriber webhooks (pre-signed JSON in Body/Headers) and for broadcast
 // targets of kind "webhook" (plain JSON with subject/body).
-type Webhook struct {
-	client *http.Client
-}
+type Webhook struct{}
 
 func (w *Webhook) Kind() string { return "webhook" }
 
 func (w *Webhook) Send(to string, m core.Message) error {
-	if w.client == nil {
-		w.client = &http.Client{Timeout: 10 * time.Second}
-	}
 	body := m.Body
 	if len(m.Headers) == 0 {
 		// Broadcast target: wrap subject+body in a minimal JSON envelope.
@@ -49,7 +43,7 @@ func (w *Webhook) Send(to string, m core.Message) error {
 	for k, v := range m.Headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := w.client.Do(req)
+	resp, err := sendClient.Do(req)
 	if err != nil {
 		return err
 	}

@@ -229,6 +229,12 @@ func (s *Service) RetryOutbox(id string) (OutboxItem, error) {
 		}
 		o.Attempts = 0
 		o.NextAttempt = s.now()
+		if _, out := s.sending[id]; out {
+			// Its send is out with the lock released. Count the re-arm so
+			// the returning result books its failure without undoing this
+			// — the operator's decision is the newer one.
+			s.sending[id]++
+		}
 		s.auditLocked("outbox.retry", map[string]any{"outbox_id": id})
 		s.saveLocked()
 		return *o, nil
@@ -239,16 +245,37 @@ func (s *Service) RetryOutbox(id string) (OutboxItem, error) {
 // SendTest sends a test message to every channel of a person — through
 // the outbox like any real message, so the admin gets the same
 // sent/delivered proof, and with an immediate delivery attempt so the
-// result is visible right away.
+// result is visible right away. Split around the lock like Tick: this
+// is the one delivery a human waits on, and it must not hold s.mu while
+// it does.
 func (s *Service) SendTest(personID string) ([]OutboxItem, error) {
+	ids, now, attempts, err := s.enqueueTest(personID)
+	if err != nil {
+		return nil, err
+	}
+	s.recordDeliveries(now, s.deliver(attempts))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []OutboxItem
+	for _, o := range s.state.Outbox {
+		if ids[o.ID] {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}
+
+// enqueueTest is the locked half of SendTest: queue the test messages
+// and collect what is due, including whatever else the outbox is owed.
+func (s *Service) enqueueTest(personID string) (map[string]bool, time.Time, []outboxAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.state.Person(personID)
 	if p == nil {
-		return nil, ErrNotFound
+		return nil, time.Time{}, nil, ErrNotFound
 	}
 	if !p.Reachable() {
-		return nil, fmt.Errorf("%s has no channels to test", p.Name)
+		return nil, time.Time{}, nil, fmt.Errorf("%s has no channels to test", p.Name)
 	}
 	ids := map[string]bool{}
 	for _, id := range s.enqueueToPersonLocked(p, OutboxItem{
@@ -259,13 +286,8 @@ func (s *Service) SendTest(personID string) ([]OutboxItem, error) {
 		ids[id] = true
 	}
 	s.auditLocked("test.sent", map[string]any{"person_id": p.ID, "channels": len(p.Channels)})
-	s.tickOutboxLocked(s.now())
+	now := s.now()
+	attempts, _ := s.collectOutboxLocked(now)
 	s.saveLocked()
-	var out []OutboxItem
-	for _, o := range s.state.Outbox {
-		if ids[o.ID] {
-			out = append(out, o)
-		}
-	}
-	return out, nil
+	return ids, now, attempts, nil
 }
