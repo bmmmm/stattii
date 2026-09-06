@@ -26,8 +26,8 @@ import (
 // that is the direction we bias toward.
 type TelegramPoller struct {
 	Token   string
-	BaseURL string                             // default api.telegram.org
-	Apply   func(token string) (string, error) // returns user-facing result text
+	BaseURL string                                     // default api.telegram.org
+	Apply   func(token, fromID string) (string, error) // returns user-facing result text; fromID is callback_query.from.id, decimal
 	Logf    func(format string, args ...any)
 	client  *http.Client
 }
@@ -37,6 +37,9 @@ type tgUpdate struct {
 	CallbackQuery *struct {
 		ID   string `json:"id"`
 		Data string `json:"data"`
+		From struct {
+			ID int64 `json:"id"`
+		} `json:"from"`
 	} `json:"callback_query"`
 }
 
@@ -80,7 +83,7 @@ func (p *TelegramPoller) Run(ctx context.Context) {
 			if u.CallbackQuery == nil {
 				continue
 			}
-			text, err := p.Apply(u.CallbackQuery.Data)
+			text, err := p.Apply(u.CallbackQuery.Data, strconv.FormatInt(u.CallbackQuery.From.ID, 10))
 			if err != nil {
 				text = "This action is no longer possible: " + err.Error()
 			}

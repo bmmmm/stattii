@@ -202,7 +202,10 @@ func cmdServe(args []string) {
 	if tgToken != "" {
 		poller := &channel.TelegramPoller{
 			Token: tgToken,
-			Apply: func(token string) (string, error) {
+			Apply: func(token, fromID string) (string, error) {
+				if err := svc.VerifyTelegramActor(token, fromID); err != nil {
+					return "", err
+				}
 				v, err := svc.ApplyAction(token, "")
 				if err != nil {
 					return "", err

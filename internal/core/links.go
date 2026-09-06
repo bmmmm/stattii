@@ -194,3 +194,32 @@ func (s *Service) ApplyAction(token, reason string) (ActionView, error) {
 	s.saveLocked()
 	return ActionView{Event: *e, Person: *p, Action: l.Action, Decided: s.state.ResponseFor(e.ID, p.ID)}, nil
 }
+
+// VerifyTelegramActor checks that a Telegram inline-button press came from
+// the person the link was minted for, not from another member of a group
+// chat the reminder was posted to. fromID is the callback_query's from.id,
+// as a decimal string; it is compared against the person's stored telegram
+// channel address (the chat id Send used), which for an ordinary one-on-one
+// bot chat equals that person's own user id — so a genuine press always
+// matches, while a press coming through a group chat (whose chat id can
+// never equal a member's user id) never does. Never mutates; a mismatch is
+// only audited. Called before ApplyAction, not folded into it: every other
+// caller of ApplyAction (the HTTP link handler, tests) has no comparable
+// sender identity to check.
+func (s *Service) VerifyTelegramActor(token, fromID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, e, p, err := s.lookupLinkLocked(token)
+	if err != nil {
+		return err
+	}
+	for _, ch := range p.Channels {
+		if ch.Kind == "telegram" && ch.To == fromID {
+			return nil
+		}
+	}
+	s.auditLocked("telegram.actor_mismatch", map[string]any{
+		"event_id": e.ID, "person_id": p.ID, "from_id": fromID,
+	})
+	return ErrWrongActor
+}

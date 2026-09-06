@@ -102,7 +102,7 @@ func TestPollerAppliesCallback(t *testing.T) {
 		Token:   "TOK",
 		BaseURL: srv.URL,
 		Logf:    t.Logf,
-		Apply: func(token string) (string, error) {
+		Apply: func(token, _ string) (string, error) {
 			applied.Store(token)
 			return "recorded", nil
 		},
@@ -122,6 +122,62 @@ func TestPollerAppliesCallback(t *testing.T) {
 	}
 	if got, _ := applied.Load().(string); got != "tok-confirm" {
 		t.Fatalf("applied token = %q", got)
+	}
+}
+
+// TestPollerPassesCallbackFromID covers #6's plumbing: the sender of an
+// inline-button press (callback_query.from.id) must reach Apply so the
+// caller can verify it against the intended person, not just be dropped
+// on the floor as it was before Apply took a second argument.
+func TestPollerPassesCallbackFromID(t *testing.T) {
+	var served atomic.Bool
+	fromIDs := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getUpdates"):
+			if r.URL.Query().Get("offset") == "-1" {
+				w.Write([]byte(`{"ok":true,"result":[]}`))
+				return
+			}
+			if served.CompareAndSwap(false, true) {
+				w.Write([]byte(`{"ok":true,"result":[{"update_id":7,"callback_query":{"id":"cb1","data":"tok-confirm","from":{"id":555}}}]}`))
+				return
+			}
+			w.Write([]byte(`{"ok":true,"result":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/answerCallbackQuery"):
+			w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { <-done }()
+	defer cancel()
+	p := &TelegramPoller{
+		Token:   "TOK",
+		BaseURL: srv.URL,
+		Logf:    t.Logf,
+		Apply: func(token, fromID string) (string, error) {
+			select {
+			case fromIDs <- fromID:
+			default:
+			}
+			return "recorded", nil
+		},
+	}
+	go func() {
+		p.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case got := <-fromIDs:
+		if got != "555" {
+			t.Fatalf("fromID = %q, want 555", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("poller never applied the callback")
 	}
 }
 
@@ -166,7 +222,7 @@ func TestPollerSeedOffsetDropsStaleUpdate(t *testing.T) {
 		Token:   "TOK",
 		BaseURL: srv.URL,
 		Logf:    t.Logf,
-		Apply: func(token string) (string, error) {
+		Apply: func(token, _ string) (string, error) {
 			applied <- token
 			return "recorded", nil
 		},
@@ -242,7 +298,7 @@ func TestPollerLogsAnswerFailure(t *testing.T) {
 					default:
 					}
 				},
-				Apply: func(token string) (string, error) {
+				Apply: func(token, _ string) (string, error) {
 					return "recorded", nil
 				},
 			}

@@ -158,10 +158,11 @@ func (s *Service) NoteLoginFailure(remote string) {
 }
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrGone      = errors.New("link expired or revoked")
-	ErrCancelled = errors.New("event is already cancelled")
-	ErrForbidden = errors.New("not allowed for this trust level")
+	ErrNotFound   = errors.New("not found")
+	ErrGone       = errors.New("link expired or revoked")
+	ErrCancelled  = errors.New("event is already cancelled")
+	ErrForbidden  = errors.New("not allowed for this trust level")
+	ErrWrongActor = errors.New("not addressed to you")
 )
 
 func (s *Service) saveLocked() {
