@@ -173,10 +173,12 @@ func TestDeletePersonRefusesWhileStillResponsible(t *testing.T) {
 	}
 }
 
-// TestDeletePersonRemovesTheirTraces: a cancelled or finished event is
-// no reason to keep them, and what they leave behind goes with them.
-// The journal keeps who answered what.
-func TestDeletePersonRemovesTheirTraces(t *testing.T) {
+// TestDeletePersonKeepsTheAnswersAndDropsTheRest: an event that has
+// happened is no reason to keep the person, and what only pointed at
+// them goes with them — but not their answers. "Someone attested that
+// this takes place" is a fact about the EVENT, and keeping it is the
+// point of the product.
+func TestDeletePersonKeepsTheAnswersAndDropsTheRest(t *testing.T) {
 	fake := &fakeNotifier{}
 	svc, clock := newTestService(t, fake)
 	past := mustEvent(t, svc, -40*time.Hour)
@@ -196,6 +198,11 @@ func TestDeletePersonRemovesTheirTraces(t *testing.T) {
 	if _, err := svc.AssignSeries("uid-1", p.ID, "host"); err != nil {
 		t.Fatal(err)
 	}
+	// An open proposal of theirs: seeded, because the action links of a
+	// past event have expired by the time one could be filed.
+	svc.state.Proposals = append(svc.state.Proposals, Proposal{
+		ID: "pr_x", PersonID: p.ID, Kind: "move", EventID: past.ID, CreatedAt: svc.now(),
+	})
 	svc.Tick(*clock)
 
 	for what, n := range map[string]int{
@@ -203,6 +210,7 @@ func TestDeletePersonRemovesTheirTraces(t *testing.T) {
 		"links":              countWhere(svc.state.Links, func(l ActionLink) bool { return l.PersonID == p.ID }),
 		"responses":          countWhere(svc.state.Responses, func(r Response) bool { return r.PersonID == p.ID }),
 		"series assignments": countWhere(svc.state.SeriesAssignments, func(sa SeriesAssignment) bool { return sa.PersonID == p.ID }),
+		"proposals":          countWhere(svc.state.Proposals, func(pr Proposal) bool { return pr.PersonID == p.ID }),
 	} {
 		if n == 0 {
 			t.Fatalf("setup produced no %s — the deletion check would pass on an empty set", what)
@@ -222,14 +230,23 @@ func TestDeletePersonRemovesTheirTraces(t *testing.T) {
 			t.Error("an action link survived the deletion")
 		}
 	}
+	kept := 0
 	for _, r := range svc.state.Responses {
 		if r.PersonID == p.ID {
-			t.Error("a response survived the deletion")
+			kept++
 		}
+	}
+	if kept == 0 {
+		t.Error("the answer went with the person — who attested to the event is the record this product keeps")
 	}
 	for _, sa := range svc.state.SeriesAssignments {
 		if sa.PersonID == p.ID {
 			t.Error("a series assignment survived the deletion")
+		}
+	}
+	for _, pr := range svc.state.Proposals {
+		if pr.PersonID == p.ID {
+			t.Error("a proposal survived the deletion")
 		}
 	}
 	// The other assignee is untouched.
@@ -310,6 +327,13 @@ func TestDeleteRefusesWhatTheImportWouldRecreate(t *testing.T) {
 	if after := eventBySourceUID(t, svc, "series-1"); after.Status != StatusCancelled {
 		t.Fatalf("the sync revived the cancelled occurrence: %s (%+v)", after.Status, rep)
 	}
+
+	// Switching the import off is not an escape hatch: the row stays the
+	// tombstone, and turning the source back on would recreate the event.
+	svc.cfg.CalendarSource = ""
+	if err := svc.DeleteEvent(e.ID); err == nil {
+		t.Fatal("clearing calendar_source made the imported occurrence deletable")
+	}
 }
 
 // TestDeleteAllowsAnImportedGhost: an occurrence the feed itself dropped
@@ -333,5 +357,73 @@ func TestDeleteAllowsAnImportedGhost(t *testing.T) {
 	*clock = clock.Add(60 * time.Hour) // it is over now
 	if err := svc.DeleteEvent(e.ID); err != nil {
 		t.Fatalf("a ghost the feed dropped and time passed must be deletable: %v", err)
+	}
+}
+
+// TestDeleteRefusesWhileTheFanOutIsStillOnItsWay: the propagation view
+// hangs off the event. Deleting it while the notices are still queued
+// takes the only place the operator can read "did the cancellation
+// arrive" — and leaves the rows themselves without a title.
+func TestDeleteRefusesWhileTheFanOutIsStillOnItsWay(t *testing.T) {
+	fake := &fakeNotifier{fail: map[string]bool{"email": true}}
+	svc, clock := newTestService(t, fake)
+	e := mustEvent(t, svc, 40*time.Hour)
+	p := mustPerson(t, svc, "ana", TrustRespond)
+	if err := svc.Assign(e.ID, p.ID, "host"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelEvent(e.ID, "", "storm", "api"); err != nil {
+		t.Fatal(err)
+	}
+	svc.Tick(*clock) // the SMTP peer refuses: the notice is retrying
+
+	ps, err := svc.Propagation(e.ID)
+	if err != nil || ps.Pending == 0 {
+		t.Fatalf("setup: want a pending propagation, got %+v (%v)", ps, err)
+	}
+	if err := svc.DeleteEvent(e.ID); err == nil {
+		t.Fatal("deleted an event whose cancellation was still on its way")
+	} else if !strings.Contains(err.Error(), "still on the way") {
+		t.Fatalf("the refusal must say why, got %q", err)
+	}
+
+	// Once it is through, the story is over and the row may go.
+	fake.mu.Lock()
+	fake.fail["email"] = false
+	fake.mu.Unlock()
+	*clock = clock.Add(time.Hour)
+	svc.Tick(*clock)
+	if err := svc.DeleteEvent(e.ID); err != nil {
+		t.Fatalf("delivered fan-out must not block the deletion: %v", err)
+	}
+}
+
+// TestDeletePersonRefusesForACancelledFutureEvent: cancelled is not
+// over. A reinstate brings the event back with its assignees, and one
+// that lost its only responsible in between comes back unstaffed.
+func TestDeletePersonRefusesForACancelledFutureEvent(t *testing.T) {
+	svc, _ := newTestService(t, &fakeNotifier{})
+	e := mustEvent(t, svc, 40*time.Hour)
+	p := mustPerson(t, svc, "ana", TrustRespond)
+	if err := svc.Assign(e.ID, p.ID, "host"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelEvent(e.ID, "", "storm", "api"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeletePerson(p.ID); err == nil {
+		t.Fatal("the sole responsible for a cancelled but upcoming event was deleted")
+	}
+	if _, err := svc.ReinstateEvent(e.ID, "api"); err != nil {
+		t.Fatal(err)
+	}
+	staffed := false
+	for _, oe := range svc.Overview().Events {
+		if oe.Event.ID == e.ID && len(oe.Assignees) == 1 {
+			staffed = true
+		}
+	}
+	if !staffed {
+		t.Fatal("the reinstated event came back unstaffed")
 	}
 }

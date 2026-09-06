@@ -150,6 +150,22 @@ type PropagationStatus struct {
 	Items []OutboxItem `json:"items"`
 }
 
+// inLastFanOut reports whether an outbox row belongs to the event's
+// latest propagation transaction — the one Propagation reports and the
+// one a deletion must not walk away from. A pre-upgrade event fanned out
+// before TxnID existed: it falls back to the old purpose-only filter
+// (still subject to the original merge-across-transactions limitation),
+// and its next cancel/move/reinstate stamps a real TxnID.
+func inLastFanOut(e *Event, o OutboxItem) bool {
+	if o.EventID != e.ID {
+		return false
+	}
+	if e.FanOutTxnID != "" {
+		return o.TxnID == e.FanOutTxnID
+	}
+	return o.Purpose == "cancellation" || o.Purpose == "moved" || o.Purpose == "reinstated"
+}
+
 func (s *Service) Propagation(eventID string) (PropagationStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -167,15 +183,7 @@ func (s *Service) Propagation(eventID string) (PropagationStatus, error) {
 		if o.EventID != eventID {
 			continue
 		}
-		if e.FanOutTxnID != "" {
-			if o.TxnID != e.FanOutTxnID {
-				continue
-			}
-		} else if o.Purpose != "cancellation" && o.Purpose != "moved" && o.Purpose != "reinstated" {
-			// A pre-upgrade event fanned out before TxnID existed: fall
-			// back to the old purpose-only filter for it (still subject
-			// to the original merge-across-transactions limitation) —
-			// its next cancel/move/reinstate stamps a real TxnID.
+		if !inLastFanOut(e, o) {
 			continue
 		}
 		ps.Total++

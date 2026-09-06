@@ -249,13 +249,47 @@ func TestAdminAPIContract(t *testing.T) {
 		t.Fatalf("overview counts: %+v", ov)
 	}
 
-	// deletion, last — it removes what the rest of the walk needs. The
-	// event is live again after the reinstate above, so it is refused
-	// until it is cancelled; the person is unassigned by now.
+}
+
+// TestAdminAPIDeleteContract walks the two DELETE routes on a fixture of
+// their own: a deletion removes exactly what the rest of a walk would
+// still need, so it cannot ride along at the end of one.
+func TestAdminAPIDeleteContract(t *testing.T) {
+	_, _, h := newTestServer(t)
+	step := func(want int, method, path, body string) {
+		t.Helper()
+		if w := do(t, h, method, path, testToken, body); w.Code != want {
+			t.Fatalf("%s %s: got %d want %d\n%s", method, path, w.Code, want, w.Body)
+		}
+	}
+	var person struct {
+		Person core.Person `json:"person"`
+	}
+	w := do(t, h, "POST", "/api/v1/people", testToken,
+		`{"name":"ana","trust":"respond","channels":[{"kind":"email","to":"ana@x.local"}]}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create person: %d %s", w.Code, w.Body)
+	}
+	decode(t, w.Body.String(), &person)
+	var ev core.Event
+	start := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339)
+	w = do(t, h, "POST", "/api/v1/events", testToken, `{"title":"Doomed","starts_at":"`+start+`"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create event: %d %s", w.Code, w.Body)
+	}
+	decode(t, w.Body.String(), &ev)
+	step(200, "POST", "/api/v1/assignments", `{"event_id":"`+ev.ID+`","person_id":"`+person.Person.ID+`"}`)
+
+	// Still on: refused. Cancelled but the notices are queued: still
+	// refused — deleting now would take the propagation view with them.
 	step(400, "DELETE", "/api/v1/events/"+ev.ID, "")
+	step(400, "DELETE", "/api/v1/people/"+person.Person.ID, "")
 	step(200, "POST", "/api/v1/events/"+ev.ID+"/cancel", `{"reason":"contract"}`)
+	step(400, "DELETE", "/api/v1/events/"+ev.ID, "")
+	step(200, "POST", "/api/v1/tick", "")
 	step(200, "DELETE", "/api/v1/events/"+ev.ID, "")
 	step(404, "DELETE", "/api/v1/events/"+ev.ID, "")
-	step(200, "DELETE", "/api/v1/people/"+created.Person.ID, "")
-	step(404, "DELETE", "/api/v1/people/"+created.Person.ID, "")
+	// The assignment went with the event, so nobody waits on ana now.
+	step(200, "DELETE", "/api/v1/people/"+person.Person.ID, "")
+	step(404, "DELETE", "/api/v1/people/"+person.Person.ID, "")
 }

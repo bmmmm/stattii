@@ -76,27 +76,41 @@ imported series.
 
 For what should never have been there at all — a mistyped person, a
 leftover cancelled event — there is `stattii person rm <id>` and `stattii
-event rm <id>`. Both refuse the cases where deleting would hide
-something from someone: an event that is still on has to be *cancelled*
-first (the notices are the whole point), and a person still responsible
-for an upcoming event has to be unassigned first. What only existed for
-the deleted subject goes with it (assignments, links, answers, guests);
-the outbox keeps the delivery proof and `audit.jsonl` keeps the history.
-An imported occurrence cannot be deleted here at all while the import is
-on: its row is derived data, and a missing one is recreated as
-*scheduled* by the next sync — for a cancelled occurrence the row IS the
-tombstone that keeps it cancelled. Remove it in the source calendar
-instead. Two more consequences worth knowing: deleting an event takes its
-`propagation` view with it (the audit trail and any pending delivery
-survive — you just cannot look the proof up by event id any more), and it
-drops the event from `/feed.ics`, so a calendar client that had not
-polled since the cancellation never sees the cancelled entry. The active
+event rm <id>`. Both refuse every case where deleting would hide
+something from someone:
+
+- an event that is still on has to be *cancelled* first (the notices are
+  the whole point), and one whose last cancellation is still queued or
+  retrying has to wait for the outbox — deleting it now would take the
+  `propagation` proof that the notices arrived with it;
+- a person still responsible for an event that has not happened yet has
+  to be unassigned first, cancelled events included: a reinstate brings
+  the event back with its assignees, and one that lost its only
+  responsible comes back unstaffed;
+- an imported occurrence is refused outright. Its row is derived data —
+  a missing one is recreated as *scheduled* by the next sync, so for a
+  cancelled occurrence the row IS the tombstone that keeps it cancelled.
+  Remove it in the source calendar instead.
+
+What only existed for the deleted subject goes with it — assignments,
+links, guests, invites, open proposals. Their *answers* do not: who
+attested that an event takes place is a fact about the event, so those
+rows stay (with a person id that no longer resolves; `audit.jsonl` has
+the name). The outbox is never touched, so a pending notice still goes
+out and a delivered one stays as proof. Both deletions fire a webhook,
+`event.deleted` and `person.deleted` — the person payload is id and name
+only, never channels or tokens. One consequence worth knowing: a deleted
+event is gone from `/feed.ics`, so a calendar client that had not polled
+since the cancellation never sees the cancelled entry. The active
 channels have already carried that message; the feed is the passive
 baseline.
 
-Every group command explains itself: `stattii event --help`, `stattii
-person --help`, and so on. Arguments a command does not know are an
-error, never silently dropped.
+Every command explains itself: `stattii event --help` lists a group,
+`stattii event rm --help` explains one command. Arguments a command does
+not know are an error, never silently dropped — and an argument that
+starts with a dash (an imported series uid, say) needs `--` in front of
+it: `stattii series-assign -- -odd-uid pe_1`. It escapes exactly that one
+argument, so flags after it still work.
 
 **Assigned is not reachable.** A person without any channel can be
 assigned, but stattii treats them as nobody: the reminder waits for
@@ -326,8 +340,8 @@ plus `invite` and `guests` for party invitations, and link revocation),
 people (create, `PATCH /people/{id}` as a patch — absent keys stay,
 `"channels": []` clears — plus test messages and portal rotation),
 deletion (`DELETE /events/{id}`, `DELETE /people/{id}` — refused while
-the event is still on or the person is still responsible for one, see
-above),
+the event is still on, its last propagation still in transit, the
+occurrence imported, or the person still responsible; see above),
 assignments (`POST /assignments`, `DELETE /events/{id}/assignees/{pid}`),
 series-assignments (`POST`, `DELETE ?source_uid=&person_id=`),
 broadcasts, webhooks, proposals, audit, overview, `tick`,

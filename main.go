@@ -48,9 +48,11 @@ Client (uses STATTII_URL and STATTII_TOKEN — point them at the ADMIN listener)
   stattii tick
   stattii version
 
-Run 'stattii serve --help' for server flags and 'stattii <group> --help'
-for what a group can do (e.g. 'stattii event --help'); leaf commands take
-the flags shown next to them (e.g. 'stattii event move <id> --at ...').
+Run 'stattii serve --help' for server flags and '<group> --help' or
+'<group> <command> --help' for what they do. Leaf commands take the flags
+shown next to them (e.g. 'stattii event move <id> --at ...'). Arguments a
+command does not know are an error; an argument that starts with a dash
+needs "--" in front of it (e.g. 'stattii series-assign -- -odd-uid pe_1').
 `)
 }
 

@@ -181,33 +181,54 @@ func isFlagToken(tok string) bool {
 
 // splitArgs cuts the argument list where the flags begin — positionals
 // come first everywhere in this CLI ("event move <id> --at ..."). A bare
-// "--" ends the flag syntax for good: everything behind it is
-// positional, which is the only way to pass an id that starts with a
-// dash (an imported series uid is foreign data).
+// "--" escapes exactly the argument behind it, which is how a value that
+// starts with a dash gets through (an imported series uid is foreign
+// data); escaping one argument rather than the whole tail keeps the
+// flags after it working.
 func splitArgs(args []string) (pos, flags []string) {
-	for i, a := range args {
-		switch {
-		case a == "--":
-			return append(args[:i:i], args[i+1:]...), nil
-		case len(a) > 1 && strings.HasPrefix(a, "-"):
-			return args[:i], args[i:]
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			if i+1 >= len(args) {
+				return pos, args[i:] // escapes nothing — an argument too many
+			}
+			pos = append(pos, args[i+1])
+			i++
+			continue
 		}
+		if len(a) > 1 && strings.HasPrefix(a, "-") {
+			return pos, args[i:]
+		}
+		pos = append(pos, a)
 	}
-	return args, nil
+	return pos, nil
+}
+
+// dashHint names the escape when the argument in the way looks like a
+// flag: the caller may have meant it as a value.
+func dashHint(flags []string) string {
+	if len(flags) == 0 || !strings.HasPrefix(flags[0], "-") {
+		return ""
+	}
+	return fmt.Sprintf(" (to pass %q as a value: -- %s)", flags[0], flags[0])
 }
 
 func (l leaf) dispatch(prefix string, args []string) error {
 	usage := strings.TrimSpace(prefix + " " + l.name + " " + l.spec)
+	if len(args) > 0 && isHelpArg(args[0]) {
+		fmt.Printf("usage: %s\n      %s\n", usage, l.help)
+		return nil
+	}
 	pos, flags := splitArgs(args)
 	min, max, takesFlags := arity(l.spec)
 	if len(pos) < min || len(pos) > max {
-		return fmt.Errorf("usage: %s", usage)
+		return fmt.Errorf("usage: %s%s", usage, dashHint(flags))
 	}
 	if len(flags) > 0 && !takesFlags {
 		// Nothing downstream would look at these: a command without
 		// flags has no FlagSet to refuse them, so this is the only place
 		// that can. "event rm ev_1 --force" must not delete anything.
-		return fmt.Errorf("unexpected argument %q — usage: %s", flags[0], usage)
+		return fmt.Errorf("unexpected argument %q%s — usage: %s", flags[0], dashHint(flags), usage)
 	}
 	return l.run(call{pos: pos, flags: flags, usage: usage})
 }
@@ -249,6 +270,9 @@ func (g group) printHelp(w io.Writer) {
 		fmt.Fprintf(w, "  stattii %s\n      %s\n",
 			strings.TrimSpace(g.name+" "+l.name+" "+l.spec), l.help)
 	}
+	fmt.Fprint(w, "\nArguments a command does not know are an error, never ignored.\n"+
+		"An argument that starts with a dash needs \"--\" in front of it\n"+
+		"(e.g. stattii series-assign -- -odd-uid pe_1).\n")
 }
 
 // ---- the table ------------------------------------------------------------

@@ -73,6 +73,17 @@ the outbox — is pruned on tick: delivered items whose event is more
 than `outbox_retention` (default 90 days) past are dropped, their proof
 already being in `audit.jsonl`. Undelivered items are never pruned.
 
+There is exactly one destructive operation on this store, and it is
+guarded rather than free: `DeleteEvent`/`DeletePerson` remove a row and
+everything that only pointed at it. Deleting is not a second way to call
+an event off, so it is refused while anyone could still be waiting — an
+event that has not happened, a propagation still in transit, an imported
+occurrence the sync would recreate, a person somebody is still counting
+on. The outbox is never part of it (a pending notice still goes out, a
+delivered one stays as proof), and neither are the answers: who attested
+that an event takes place is a fact about the event, not about the
+person. `audit.jsonl` records what went, with counts per table.
+
 ## Identity: token possession, three tiers
 
 There are no accounts. Two kinds of keys, strictly separated:

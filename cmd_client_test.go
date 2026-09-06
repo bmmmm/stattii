@@ -3,8 +3,10 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // recorded is what a command WOULD have sent. The dispatch tests swap
@@ -13,6 +15,15 @@ import (
 type recorded struct {
 	method, path string
 	body         any
+}
+
+// sameBody compares two request bodies; two absent bodies are equal,
+// which reflect.DeepEqual does not say about a pair of nil interfaces.
+func sameBody(got, want any) bool {
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	return reflect.DeepEqual(got, want)
 }
 
 func record(t *testing.T) *recorded {
@@ -35,54 +46,64 @@ func record(t *testing.T) *recorded {
 // the proof that turning five near-identical switch dispatchers into
 // one table kept every route exactly where it was.
 func TestClientDispatchTable(t *testing.T) {
+	when := func(s string) time.Time { v, _ := parseWhen(s); return v }
 	cases := []struct {
 		args         []string
 		method, path string
+		body         any
 	}{
-		{[]string{"event", "list"}, "GET", "/api/v1/events"},
-		{[]string{"event", "create", "--title", "x", "--at", "2026-08-18T19:00"}, "POST", "/api/v1/events"},
-		{[]string{"event", "show", "ev_1"}, "GET", "/api/v1/events/ev_1"},
-		{[]string{"event", "confirm", "ev_1"}, "POST", "/api/v1/events/ev_1/confirm"},
-		{[]string{"event", "cancel", "ev_1", "--reason", "storm"}, "POST", "/api/v1/events/ev_1/cancel"},
-		{[]string{"event", "reinstate", "ev_1"}, "POST", "/api/v1/events/ev_1/reinstate"},
-		{[]string{"event", "move", "ev_1", "--at", "2026-08-19T19:00"}, "POST", "/api/v1/events/ev_1/move"},
-		{[]string{"event", "links", "ev_1", "pe_1"}, "POST", "/api/v1/events/ev_1/links"},
-		{[]string{"event", "revoke-links", "ev_1"}, "DELETE", "/api/v1/events/ev_1/links"},
-		{[]string{"event", "revoke-links", "ev_1", "pe_1"}, "DELETE", "/api/v1/events/ev_1/links?person_id=pe_1"},
-		{[]string{"event", "responses", "ev_1"}, "GET", "/api/v1/events/ev_1/responses"},
-		{[]string{"event", "propagation", "ev_1"}, "GET", "/api/v1/events/ev_1/propagation"},
-		{[]string{"event", "invite", "ev_1"}, "POST", "/api/v1/events/ev_1/invite"},
-		{[]string{"event", "invite", "ev_1", "--revoke"}, "DELETE", "/api/v1/events/ev_1/invite"},
-		{[]string{"event", "guests", "ev_1"}, "GET", "/api/v1/events/ev_1/guests"},
-		{[]string{"event", "guests", "ev_1", "--remove", "gu_1"}, "DELETE", "/api/v1/events/ev_1/guests/gu_1"},
-		{[]string{"event", "rm", "ev_1"}, "DELETE", "/api/v1/events/ev_1"},
-		{[]string{"person", "list"}, "GET", "/api/v1/people"},
-		{[]string{"person", "add", "--name", "Ana"}, "POST", "/api/v1/people"},
-		{[]string{"person", "set", "pe_1", "--name", "Ana"}, "PATCH", "/api/v1/people/pe_1"},
-		{[]string{"person", "test", "pe_1"}, "POST", "/api/v1/people/pe_1/test-message"},
-		{[]string{"person", "rotate-portal", "pe_1"}, "POST", "/api/v1/people/pe_1/rotate-portal"},
-		{[]string{"person", "rm", "pe_1"}, "DELETE", "/api/v1/people/pe_1"},
-		{[]string{"broadcast", "list"}, "GET", "/api/v1/broadcasts"},
-		{[]string{"broadcast", "add", "--kind", "email", "--to", "a@x"}, "POST", "/api/v1/broadcasts"},
-		{[]string{"broadcast", "rm", "bc_1"}, "DELETE", "/api/v1/broadcasts/bc_1"},
-		{[]string{"webhook", "list"}, "GET", "/api/v1/webhooks"},
-		{[]string{"webhook", "add", "--url", "https://x.example"}, "POST", "/api/v1/webhooks"},
-		{[]string{"webhook", "rm", "wh_1"}, "DELETE", "/api/v1/webhooks/wh_1"},
-		{[]string{"proposal", "list"}, "GET", "/api/v1/proposals"},
-		{[]string{"proposal", "accept", "pr_1"}, "POST", "/api/v1/proposals/pr_1/decide"},
-		{[]string{"proposal", "reject", "pr_1"}, "POST", "/api/v1/proposals/pr_1/decide"},
-		{[]string{"outbox", "list"}, "GET", "/api/v1/outbox"},
-		{[]string{"outbox", "list", "--pending"}, "GET", "/api/v1/outbox?pending=1"},
-		{[]string{"outbox", "retry", "ob_1"}, "POST", "/api/v1/outbox/ob_1/retry"},
-		{[]string{"calendar", "fetch"}, "POST", "/api/v1/calendar/fetch"},
-		{[]string{"assign", "ev_1", "pe_1"}, "POST", "/api/v1/assignments"},
-		{[]string{"assign", "ev_1", "pe_1", "host"}, "POST", "/api/v1/assignments"},
-		{[]string{"unassign", "ev_1", "pe_1"}, "DELETE", "/api/v1/events/ev_1/assignees/pe_1"},
-		{[]string{"series-assign", "uid-1", "pe_1"}, "POST", "/api/v1/series-assignments"},
-		{[]string{"series-unassign", "uid-1", "pe_1"}, "DELETE", "/api/v1/series-assignments?person_id=pe_1&source_uid=uid-1"},
-		{[]string{"audit"}, "GET", "/api/v1/audit?limit=200"},
-		{[]string{"audit", "--limit", "5"}, "GET", "/api/v1/audit?limit=5"},
-		{[]string{"tick"}, "POST", "/api/v1/tick"},
+		{[]string{"event", "list"}, "GET", "/api/v1/events", nil},
+		{[]string{"event", "create", "--title", "x", "--at", "2026-08-18T19:00"}, "POST", "/api/v1/events",
+			map[string]any{"title": "x", "location": "", "note": "", "starts_at": when("2026-08-18T19:00"), "ends_at": time.Time{}, "if_unconfirmed": "notify"}},
+		{[]string{"event", "show", "ev_1"}, "GET", "/api/v1/events/ev_1", nil},
+		{[]string{"event", "confirm", "ev_1"}, "POST", "/api/v1/events/ev_1/confirm", map[string]any{}},
+		{[]string{"event", "cancel", "ev_1", "--reason", "storm"}, "POST", "/api/v1/events/ev_1/cancel", map[string]string{"reason": "storm"}},
+		{[]string{"event", "reinstate", "ev_1"}, "POST", "/api/v1/events/ev_1/reinstate", map[string]any{}},
+		{[]string{"event", "move", "ev_1", "--at", "2026-08-19T19:00"}, "POST", "/api/v1/events/ev_1/move",
+			map[string]any{"starts_at": when("2026-08-19T19:00"), "ends_at": time.Time{}, "note": ""}},
+		{[]string{"event", "links", "ev_1", "pe_1"}, "POST", "/api/v1/events/ev_1/links", map[string]string{"person_id": "pe_1"}},
+		{[]string{"event", "revoke-links", "ev_1"}, "DELETE", "/api/v1/events/ev_1/links", nil},
+		{[]string{"event", "revoke-links", "ev_1", "pe_1"}, "DELETE", "/api/v1/events/ev_1/links?person_id=pe_1", nil},
+		{[]string{"event", "responses", "ev_1"}, "GET", "/api/v1/events/ev_1/responses", nil},
+		{[]string{"event", "propagation", "ev_1"}, "GET", "/api/v1/events/ev_1/propagation", nil},
+		{[]string{"event", "invite", "ev_1"}, "POST", "/api/v1/events/ev_1/invite", map[string]any{}},
+		{[]string{"event", "invite", "ev_1", "--revoke"}, "DELETE", "/api/v1/events/ev_1/invite", nil},
+		{[]string{"event", "guests", "ev_1"}, "GET", "/api/v1/events/ev_1/guests", nil},
+		{[]string{"event", "guests", "ev_1", "--remove", "gu_1"}, "DELETE", "/api/v1/events/ev_1/guests/gu_1", nil},
+		{[]string{"event", "rm", "ev_1"}, "DELETE", "/api/v1/events/ev_1", nil},
+		{[]string{"person", "list"}, "GET", "/api/v1/people", nil},
+		{[]string{"person", "add", "--name", "Ana"}, "POST", "/api/v1/people",
+			map[string]any{"name": "Ana", "trust": "respond", "channels": []map[string]string(nil)}},
+		{[]string{"person", "set", "pe_1", "--name", "Ana"}, "PATCH", "/api/v1/people/pe_1", map[string]any{"name": "Ana"}},
+		{[]string{"person", "test", "pe_1"}, "POST", "/api/v1/people/pe_1/test-message", nil},
+		{[]string{"person", "rotate-portal", "pe_1"}, "POST", "/api/v1/people/pe_1/rotate-portal", nil},
+		{[]string{"person", "rm", "pe_1"}, "DELETE", "/api/v1/people/pe_1", nil},
+		{[]string{"broadcast", "list"}, "GET", "/api/v1/broadcasts", nil},
+		{[]string{"broadcast", "add", "--kind", "email", "--to", "a@x"}, "POST", "/api/v1/broadcasts",
+			map[string]string{"name": "", "kind": "email", "to": "a@x"}},
+		{[]string{"broadcast", "rm", "bc_1"}, "DELETE", "/api/v1/broadcasts/bc_1", nil},
+		{[]string{"webhook", "list"}, "GET", "/api/v1/webhooks", nil},
+		{[]string{"webhook", "add", "--url", "https://x.example"}, "POST", "/api/v1/webhooks",
+			map[string]any{"url": "https://x.example", "events": []string(nil)}},
+		{[]string{"webhook", "rm", "wh_1"}, "DELETE", "/api/v1/webhooks/wh_1", nil},
+		{[]string{"proposal", "list"}, "GET", "/api/v1/proposals", nil},
+		{[]string{"proposal", "accept", "pr_1"}, "POST", "/api/v1/proposals/pr_1/decide", map[string]bool{"accept": true}},
+		{[]string{"proposal", "reject", "pr_1"}, "POST", "/api/v1/proposals/pr_1/decide", map[string]bool{"accept": false}},
+		{[]string{"outbox", "list"}, "GET", "/api/v1/outbox", nil},
+		{[]string{"outbox", "list", "--pending"}, "GET", "/api/v1/outbox?pending=1", nil},
+		{[]string{"outbox", "retry", "ob_1"}, "POST", "/api/v1/outbox/ob_1/retry", nil},
+		{[]string{"calendar", "fetch"}, "POST", "/api/v1/calendar/fetch", nil},
+		{[]string{"assign", "ev_1", "pe_1"}, "POST", "/api/v1/assignments",
+			map[string]string{"event_id": "ev_1", "person_id": "pe_1", "role": ""}},
+		{[]string{"assign", "ev_1", "pe_1", "host"}, "POST", "/api/v1/assignments",
+			map[string]string{"event_id": "ev_1", "person_id": "pe_1", "role": "host"}},
+		{[]string{"unassign", "ev_1", "pe_1"}, "DELETE", "/api/v1/events/ev_1/assignees/pe_1", nil},
+		{[]string{"series-assign", "uid-1", "pe_1"}, "POST", "/api/v1/series-assignments",
+			map[string]string{"source_uid": "uid-1", "person_id": "pe_1", "role": ""}},
+		{[]string{"series-unassign", "uid-1", "pe_1"}, "DELETE", "/api/v1/series-assignments?person_id=pe_1&source_uid=uid-1", nil},
+		{[]string{"audit"}, "GET", "/api/v1/audit?limit=200", nil},
+		{[]string{"audit", "--limit", "5"}, "GET", "/api/v1/audit?limit=5", nil},
+		{[]string{"tick"}, "POST", "/api/v1/tick", nil},
 	}
 	for _, c := range cases {
 		t.Run(strings.Join(c.args, " "), func(t *testing.T) {
@@ -92,6 +113,9 @@ func TestClientDispatchTable(t *testing.T) {
 			}
 			if got.method != c.method || got.path != c.path {
 				t.Fatalf("got %s %s, want %s %s", got.method, got.path, c.method, c.path)
+			}
+			if !sameBody(got.body, c.body) {
+				t.Fatalf("body:\n got %#v\nwant %#v", got.body, c.body)
 			}
 		})
 	}
@@ -209,10 +233,11 @@ func TestExtraArgumentsAreAnError(t *testing.T) {
 	}
 }
 
-// TestDashDashPassesAPositional: an imported series uid is foreign data
+// TestDashDashEscapesOneArgument: an imported series uid is foreign data
 // (AGENTS.md invariant 10) and may start with a dash. Refusing those in
-// the flag tail is right, but there has to be a way in.
-func TestDashDashPassesAPositional(t *testing.T) {
+// the flag tail is right, but there has to be a way in — and it escapes
+// exactly one argument, so the flags behind it still work.
+func TestDashDashEscapesOneArgument(t *testing.T) {
 	got := record(t)
 	if err := cmdClient([]string{"series-assign", "--", "-odd-uid", "pe_1"}); err != nil {
 		t.Fatal(err)
@@ -223,6 +248,54 @@ func TestDashDashPassesAPositional(t *testing.T) {
 	body, ok := got.body.(map[string]string)
 	if !ok || body["source_uid"] != "-odd-uid" || body["person_id"] != "pe_1" {
 		t.Fatalf("body: %#v", got.body)
+	}
+
+	*got = recorded{}
+	if err := cmdClient([]string{"event", "guests", "--", "-ev1", "--remove", "gu_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got.method != "DELETE" || got.path != "/api/v1/events/-ev1/guests/gu_1" {
+		t.Fatalf("a flag after the escaped argument was lost: got %s %s", got.method, got.path)
+	}
+}
+
+// TestLeafHelpAnswers: every leaf explains itself, including the ones
+// with no flags — those have no FlagSet to answer --help for them.
+func TestLeafHelpAnswers(t *testing.T) {
+	got := record(t)
+	for _, args := range [][]string{
+		{"event", "rm", "--help"},
+		{"person", "rm", "-h"},
+		{"tick", "--help"},
+		{"event", "cancel", "--help"},
+		{"unassign", "help"},
+	} {
+		*got = recorded{}
+		if err := cmdClient(args); err != nil {
+			t.Errorf("%v: %v", args, err)
+		}
+		if got.method != "" {
+			t.Errorf("%v: --help sent %s %s", args, got.method, got.path)
+		}
+	}
+}
+
+// TestUsageNamesTheEscape: a value that starts with a dash lands in the
+// flag tail, and the error has to say how to get it through — otherwise
+// "series-unassign -weird pe_1" is a dead end.
+func TestUsageNamesTheEscape(t *testing.T) {
+	record(t)
+	for _, args := range [][]string{
+		{"series-unassign", "-weird", "pe_1"},
+		{"event", "revoke-links", "ev_1", "-pe_1"},
+	} {
+		err := cmdClient(args)
+		if err == nil {
+			t.Fatalf("%v: accepted", args)
+		}
+		if !strings.Contains(err.Error(), "-- -") {
+			t.Errorf("%v: the error does not name the escape: %q", args, err)
+		}
 	}
 }
 
