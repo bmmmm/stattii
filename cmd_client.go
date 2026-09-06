@@ -92,6 +92,14 @@ func apiJSON(path string, out any) error {
 	return json.Unmarshal(raw, out)
 }
 
+// The two request paths, indirected: the dispatch test records what
+// each command WOULD send, so the whole table is walked without a
+// server. Every leaf goes through these, never through api/apiJSON.
+var (
+	apiSend  = api
+	apiFetch = apiJSON
+)
+
 // parseWhen accepts RFC3339 or the shorter "2006-01-02T15:04" (local time).
 func parseWhen(s string) (time.Time, error) {
 	if s == "" {
@@ -106,380 +114,509 @@ func parseWhen(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("cannot parse time %q (use RFC3339 or 2006-01-02T15:04)", s)
 }
 
-func cmdClient(args []string) error {
-	cmd := args[0]
-	rest := args[1:]
-	switch cmd {
-	case "overview":
-		return cmdOverview(rest)
-	case "calendar":
-		if len(rest) < 1 || rest[0] != "fetch" {
-			return fmt.Errorf("usage: stattii calendar fetch")
+// ---- dispatch -------------------------------------------------------------
+
+// call is what a leaf command receives: the positional arguments it was
+// given, the flag tail that followed them, and the usage line to quote
+// when something is wrong.
+type call struct {
+	pos   []string
+	flags []string
+	usage string
+}
+
+// parse reads the flag tail and refuses what is left over: "stattii
+// event cancel ev_1 --reason storm oops" used to drop "oops" without a
+// word, and a mistyped id is exactly what hides there.
+func (c call) parse(fs *flag.FlagSet) error {
+	fs.Parse(c.flags)
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q — usage: %s", fs.Arg(0), c.usage)
+	}
+	return nil
+}
+
+// leaf is one command. spec is both the usage line and the arity
+// contract: `<x>` is a required positional, `[x]` an optional one, and
+// the first token starting with a dash begins the flag syntax the leaf
+// parses itself. One string, so usage and check cannot drift apart.
+type leaf struct {
+	name string
+	spec string
+	help string
+	run  func(call) error
+}
+
+// group is a set of leaves under one word (event, person, …): dispatch,
+// usage, arity and --help for all of them in one place, instead of the
+// near-identical switch statements this replaces.
+type group struct {
+	name   string
+	help   string
+	usage  string // overrides the "a|b|c" list where a group needs prose
+	leaves []leaf
+}
+
+// arity derives the positional-argument window from the spec, and
+// whether the command takes flags at all.
+func arity(spec string) (min, max int, flags bool) {
+	for _, tok := range strings.Fields(spec) {
+		if isFlagToken(tok) {
+			return min, max, true // flag syntax from here on
 		}
-		return api("POST", "/api/v1/calendar/fetch", nil)
-	case "series-assign":
-		if len(rest) < 2 {
-			return fmt.Errorf("usage: stattii series-assign <source-uid> <person-id> [role]")
+		switch {
+		case strings.HasPrefix(tok, "<"):
+			min++
+			max++
+		case strings.HasPrefix(tok, "["):
+			max++
 		}
-		role := ""
-		if len(rest) > 2 {
-			role = rest[2]
+	}
+	return min, max, false
+}
+
+func isFlagToken(tok string) bool {
+	return strings.HasPrefix(tok, "-") || strings.HasPrefix(tok, "[-")
+}
+
+// splitArgs cuts the argument list where the flags begin — positionals
+// come first everywhere in this CLI ("event move <id> --at ..."). A bare
+// "--" ends the flag syntax for good: everything behind it is
+// positional, which is the only way to pass an id that starts with a
+// dash (an imported series uid is foreign data).
+func splitArgs(args []string) (pos, flags []string) {
+	for i, a := range args {
+		switch {
+		case a == "--":
+			return append(args[:i:i], args[i+1:]...), nil
+		case len(a) > 1 && strings.HasPrefix(a, "-"):
+			return args[:i], args[i:]
 		}
-		return api("POST", "/api/v1/series-assignments", map[string]string{
-			"source_uid": rest[0], "person_id": rest[1], "role": role,
+	}
+	return args, nil
+}
+
+func (l leaf) dispatch(prefix string, args []string) error {
+	usage := strings.TrimSpace(prefix + " " + l.name + " " + l.spec)
+	pos, flags := splitArgs(args)
+	min, max, takesFlags := arity(l.spec)
+	if len(pos) < min || len(pos) > max {
+		return fmt.Errorf("usage: %s", usage)
+	}
+	if len(flags) > 0 && !takesFlags {
+		// Nothing downstream would look at these: a command without
+		// flags has no FlagSet to refuse them, so this is the only place
+		// that can. "event rm ev_1 --force" must not delete anything.
+		return fmt.Errorf("unexpected argument %q — usage: %s", flags[0], usage)
+	}
+	return l.run(call{pos: pos, flags: flags, usage: usage})
+}
+
+func (g group) dispatch(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: stattii %s %s", g.name, g.usageLine())
+	}
+	if isHelpArg(args[0]) {
+		g.printHelp(os.Stdout)
+		return nil
+	}
+	for _, l := range g.leaves {
+		if l.name == args[0] {
+			return l.dispatch("stattii "+g.name, args[1:])
+		}
+	}
+	return fmt.Errorf("unknown %s subcommand %q", g.name, args[0])
+}
+
+func (g group) usageLine() string {
+	if g.usage != "" {
+		return g.usage
+	}
+	names := make([]string, len(g.leaves))
+	for i, l := range g.leaves {
+		names[i] = l.name
+	}
+	return strings.Join(names, "|")
+}
+
+func isHelpArg(a string) bool { return a == "--help" || a == "-h" || a == "help" }
+
+// printHelp answers "stattii event --help" — the question that used to
+// come back as an error about an unknown subcommand.
+func (g group) printHelp(w io.Writer) {
+	fmt.Fprintf(w, "stattii %s — %s\n\n", g.name, g.help)
+	for _, l := range g.leaves {
+		fmt.Fprintf(w, "  stattii %s\n      %s\n",
+			strings.TrimSpace(g.name+" "+l.name+" "+l.spec), l.help)
+	}
+}
+
+// ---- the table ------------------------------------------------------------
+
+// clientGroups and clientLeaves ARE the CLI: one row per command,
+// carrying its own usage line, its own help text, and its own request.
+var clientGroups = []group{
+	{
+		name: "event", help: "events and everything that hangs off one",
+		leaves: []leaf{
+			{"list", "", "list all events", func(c call) error {
+				return apiSend("GET", "/api/v1/events", nil)
+			}},
+			{"create", "--title ... --at ... [--end ...] [--location ...] [--note ...] [--if-unconfirmed notify|cancel]",
+				"create an event", func(c call) error {
+					fs := flag.NewFlagSet("event create", flag.ExitOnError)
+					title := fs.String("title", "", "event title (required)")
+					at := fs.String("at", "", "start time (required)")
+					end := fs.String("end", "", "end time")
+					location := fs.String("location", "", "location")
+					note := fs.String("note", "", "note")
+					ifUnconfirmed := fs.String("if-unconfirmed", "notify", "notify | cancel (dead-man-switch)")
+					if err := c.parse(fs); err != nil {
+						return err
+					}
+					start, err := parseWhen(*at)
+					if err != nil {
+						return err
+					}
+					endT, err := parseWhen(*end)
+					if err != nil {
+						return err
+					}
+					return apiSend("POST", "/api/v1/events", map[string]any{
+						"title": *title, "location": *location, "note": *note,
+						"starts_at": start, "ends_at": endT, "if_unconfirmed": *ifUnconfirmed,
+					})
+				}},
+			{"show", "<event-id>", "print one event as JSON", func(c call) error {
+				return apiSend("GET", "/api/v1/events/"+c.pos[0], nil)
+			}},
+			{"confirm", "<event-id>", "confirm it on the operator's behalf", func(c call) error {
+				return apiSend("POST", "/api/v1/events/"+c.pos[0]+"/confirm", map[string]any{})
+			}},
+			{"cancel", "<event-id> [--reason ...]", "cancel it and propagate outward", func(c call) error {
+				fs := flag.NewFlagSet("event cancel", flag.ExitOnError)
+				reason := fs.String("reason", "", "why the event is cancelled")
+				if err := c.parse(fs); err != nil {
+					return err
+				}
+				return apiSend("POST", "/api/v1/events/"+c.pos[0]+"/cancel", map[string]string{"reason": *reason})
+			}},
+			{"reinstate", "<event-id>", "withdraw a cancellation", func(c call) error {
+				return apiSend("POST", "/api/v1/events/"+c.pos[0]+"/reinstate", map[string]any{})
+			}},
+			{"move", "<event-id> --at ... [--end ...] [--note ...]", "move it and tell everyone", func(c call) error {
+				fs := flag.NewFlagSet("event move", flag.ExitOnError)
+				at := fs.String("at", "", "new start time (required)")
+				end := fs.String("end", "", "new end time")
+				note := fs.String("note", "", "note")
+				if err := c.parse(fs); err != nil {
+					return err
+				}
+				if *at == "" {
+					return fmt.Errorf("--at is required: a move without a new start would notify everyone of a move to nowhere")
+				}
+				start, err := parseWhen(*at)
+				if err != nil {
+					return err
+				}
+				endT, err := parseWhen(*end)
+				if err != nil {
+					return err
+				}
+				return apiSend("POST", "/api/v1/events/"+c.pos[0]+"/move", map[string]any{
+					"starts_at": start, "ends_at": endT, "note": *note,
+				})
+			}},
+			{"links", "<event-id> <person-id>", "mint the personal yes/no links", func(c call) error {
+				return apiSend("POST", "/api/v1/events/"+c.pos[0]+"/links", map[string]string{"person_id": c.pos[1]})
+			}},
+			{"revoke-links", "<event-id> [person-id]", "revoke them again", func(c call) error {
+				path := "/api/v1/events/" + c.pos[0] + "/links"
+				if len(c.pos) > 1 {
+					path += "?person_id=" + c.pos[1]
+				}
+				return apiSend("DELETE", path, nil)
+			}},
+			{"responses", "<event-id>", "who answered what", func(c call) error {
+				return apiSend("GET", "/api/v1/events/"+c.pos[0]+"/responses", nil)
+			}},
+			{"propagation", "<event-id>", "is the cancellation actually out", func(c call) error {
+				return apiSend("GET", "/api/v1/events/"+c.pos[0]+"/propagation", nil)
+			}},
+			{"invite", "<event-id> [--revoke]", "mint or revoke the shared guest link", func(c call) error {
+				fs := flag.NewFlagSet("event invite", flag.ExitOnError)
+				revoke := fs.Bool("revoke", false, "revoke the current invite link (guests keep getting notices)")
+				if err := c.parse(fs); err != nil {
+					return err
+				}
+				if *revoke {
+					return apiSend("DELETE", "/api/v1/events/"+c.pos[0]+"/invite", nil)
+				}
+				return apiSend("POST", "/api/v1/events/"+c.pos[0]+"/invite", map[string]any{})
+			}},
+			{"guests", "<event-id> [--remove <guest-id>]", "list the guests, or remove one", func(c call) error {
+				fs := flag.NewFlagSet("event guests", flag.ExitOnError)
+				remove := fs.String("remove", "", "remove one guest by id")
+				if err := c.parse(fs); err != nil {
+					return err
+				}
+				if *remove != "" {
+					return apiSend("DELETE", "/api/v1/events/"+c.pos[0]+"/guests/"+*remove, nil)
+				}
+				return apiSend("GET", "/api/v1/events/"+c.pos[0]+"/guests", nil)
+			}},
+			{"rm", "<event-id>", "delete a cancelled or finished event for good", func(c call) error {
+				return apiSend("DELETE", "/api/v1/events/"+c.pos[0], nil)
+			}},
+		},
+	},
+	{
+		name: "person", help: "the people who are responsible",
+		leaves: []leaf{
+			{"list", "", "list everyone", func(c call) error {
+				return apiSend("GET", "/api/v1/people", nil)
+			}},
+			{"add", "--name ... [--trust respond|propose|direct] [--email ...] [--telegram ...]",
+				"add a person", func(c call) error {
+					fs := flag.NewFlagSet("person add", flag.ExitOnError)
+					name := fs.String("name", "", "name (required)")
+					trust := fs.String("trust", "respond", "respond | propose | direct")
+					email := fs.String("email", "", "email address")
+					telegram := fs.String("telegram", "", "telegram chat id")
+					if err := c.parse(fs); err != nil {
+						return err
+					}
+					var channels []map[string]string
+					if *email != "" {
+						channels = append(channels, map[string]string{"kind": "email", "to": *email})
+					}
+					if *telegram != "" {
+						channels = append(channels, map[string]string{"kind": "telegram", "to": *telegram})
+					}
+					return apiSend("POST", "/api/v1/people", map[string]any{"name": *name, "trust": *trust, "channels": channels})
+				}},
+			{"set", "<person-id> [--name ...] [--trust ...] [--email ...] [--telegram ...]",
+				"patch one person — flags you leave out stay untouched", cmdPersonSet},
+			{"test", "<person-id>", "send a test message to every channel", func(c call) error {
+				return apiSend("POST", "/api/v1/people/"+c.pos[0]+"/test-message", nil)
+			}},
+			{"rotate-portal", "<person-id>", "mint a fresh portal token", func(c call) error {
+				return apiSend("POST", "/api/v1/people/"+c.pos[0]+"/rotate-portal", nil)
+			}},
+			{"rm", "<person-id>", "delete a person nobody is waiting on", func(c call) error {
+				return apiSend("DELETE", "/api/v1/people/"+c.pos[0], nil)
+			}},
+		},
+	},
+	{
+		name: "broadcast", help: "audience-facing targets that get propagation notices",
+		leaves: []leaf{
+			{"list", "", "list the targets", func(c call) error {
+				return apiSend("GET", "/api/v1/broadcasts", nil)
+			}},
+			{"add", "--kind email|telegram|webhook --to ... [--name ...]", "add one", func(c call) error {
+				fs := flag.NewFlagSet("broadcast add", flag.ExitOnError)
+				name := fs.String("name", "", "label")
+				kind := fs.String("kind", "", "email | telegram | webhook (required)")
+				to := fs.String("to", "", "address / chat id / URL (required)")
+				if err := c.parse(fs); err != nil {
+					return err
+				}
+				return apiSend("POST", "/api/v1/broadcasts", map[string]string{"name": *name, "kind": *kind, "to": *to})
+			}},
+			{"rm", "<id>", "remove one", func(c call) error {
+				return apiSend("DELETE", "/api/v1/broadcasts/"+c.pos[0], nil)
+			}},
+		},
+	},
+	{
+		name: "webhook", help: "signed JSON subscriptions",
+		leaves: []leaf{
+			{"list", "", "list the subscriptions (secrets redacted)", func(c call) error {
+				return apiSend("GET", "/api/v1/webhooks", nil)
+			}},
+			{"add", "--url ... [--events a,b]", "subscribe (the secret is printed once)", func(c call) error {
+				fs := flag.NewFlagSet("webhook add", flag.ExitOnError)
+				target := fs.String("url", "", "target URL (required)")
+				events := fs.String("events", "", "comma-separated filter (empty = all)")
+				if err := c.parse(fs); err != nil {
+					return err
+				}
+				var evs []string
+				if *events != "" {
+					evs = strings.Split(*events, ",")
+				}
+				return apiSend("POST", "/api/v1/webhooks", map[string]any{"url": *target, "events": evs})
+			}},
+			{"rm", "<id>", "unsubscribe", func(c call) error {
+				return apiSend("DELETE", "/api/v1/webhooks/"+c.pos[0], nil)
+			}},
+		},
+	},
+	{
+		name: "proposal", help: "change requests waiting for a decision",
+		leaves: []leaf{
+			{"list", "", "list them", func(c call) error {
+				return apiSend("GET", "/api/v1/proposals", nil)
+			}},
+			{"accept", "<id>", "accept and apply it", func(c call) error {
+				return apiSend("POST", "/api/v1/proposals/"+c.pos[0]+"/decide", map[string]bool{"accept": true})
+			}},
+			{"reject", "<id>", "turn it down", func(c call) error {
+				return apiSend("POST", "/api/v1/proposals/"+c.pos[0]+"/decide", map[string]bool{"accept": false})
+			}},
+		},
+	},
+	{
+		name: "outbox", help: "what went out, and what is stuck",
+		usage: "list [--pending] | retry <id>",
+		leaves: []leaf{
+			{"list", "[--pending]", "list the outbox", func(c call) error {
+				fs := flag.NewFlagSet("outbox list", flag.ExitOnError)
+				pending := fs.Bool("pending", false, "only undelivered items")
+				if err := c.parse(fs); err != nil {
+					return err
+				}
+				path := "/api/v1/outbox"
+				if *pending {
+					path += "?pending=1"
+				}
+				return apiSend("GET", path, nil)
+			}},
+			{"retry", "<id>", "re-arm one item for the next tick", func(c call) error {
+				return apiSend("POST", "/api/v1/outbox/"+c.pos[0]+"/retry", nil)
+			}},
+		},
+	},
+	{
+		name: "calendar", help: "the imported source feed",
+		leaves: []leaf{
+			{"fetch", "", "fetch and sync the source feed now", func(c call) error {
+				return apiSend("POST", "/api/v1/calendar/fetch", nil)
+			}},
+		},
+	},
+}
+
+var clientLeaves = []leaf{
+	{"overview", "[--all]", "the operator's one-glance view", cmdOverview},
+	{"assign", "<event-id> <person-id> [role]", "make someone responsible", func(c call) error {
+		return apiSend("POST", "/api/v1/assignments", map[string]string{
+			"event_id": c.pos[0], "person_id": c.pos[1], "role": posOr(c.pos, 2),
 		})
-	case "event":
-		return cmdEvent(rest)
-	case "person":
-		return cmdPerson(rest)
-	case "assign":
-		if len(rest) < 2 {
-			return fmt.Errorf("usage: stattii assign <event-id> <person-id> [role]")
-		}
-		role := ""
-		if len(rest) > 2 {
-			role = rest[2]
-		}
-		return api("POST", "/api/v1/assignments", map[string]string{"event_id": rest[0], "person_id": rest[1], "role": role})
-	case "unassign":
-		if len(rest) < 2 {
-			return fmt.Errorf("usage: stattii unassign <event-id> <person-id>")
-		}
-		return api("DELETE", "/api/v1/events/"+rest[0]+"/assignees/"+rest[1], nil)
-	case "series-unassign":
-		if len(rest) < 2 {
-			return fmt.Errorf("usage: stattii series-unassign <source-uid> <person-id>")
-		}
-		q := url.Values{"source_uid": {rest[0]}, "person_id": {rest[1]}}
-		return api("DELETE", "/api/v1/series-assignments?"+q.Encode(), nil)
-	case "broadcast":
-		return cmdBroadcast(rest)
-	case "webhook":
-		return cmdWebhook(rest)
-	case "proposal":
-		return cmdProposal(rest)
-	case "outbox":
-		return cmdOutbox(rest)
-	case "audit":
+	}},
+	{"unassign", "<event-id> <person-id>", "take that responsibility away", func(c call) error {
+		return apiSend("DELETE", "/api/v1/events/"+c.pos[0]+"/assignees/"+c.pos[1], nil)
+	}},
+	{"series-assign", "<source-uid> <person-id> [role]", "make someone responsible for a whole series", func(c call) error {
+		return apiSend("POST", "/api/v1/series-assignments", map[string]string{
+			"source_uid": c.pos[0], "person_id": c.pos[1], "role": posOr(c.pos, 2),
+		})
+	}},
+	{"series-unassign", "<source-uid> <person-id>", "and take it away again", func(c call) error {
+		q := url.Values{"source_uid": {c.pos[0]}, "person_id": {c.pos[1]}}
+		return apiSend("DELETE", "/api/v1/series-assignments?"+q.Encode(), nil)
+	}},
+	{"audit", "[--limit N]", "the append-only journal", func(c call) error {
 		fs := flag.NewFlagSet("audit", flag.ExitOnError)
 		limit := fs.Int("limit", 200, "max entries")
-		fs.Parse(rest)
-		return api("GET", fmt.Sprintf("/api/v1/audit?limit=%d", *limit), nil)
-	case "tick":
-		return api("POST", "/api/v1/tick", nil)
-	default:
-		usage()
-		return fmt.Errorf("unknown command %q", cmd)
-	}
-}
-
-func cmdEvent(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii event list|create|show|confirm|cancel|reinstate|move|links|revoke-links|responses|propagation|invite|guests")
-	}
-	sub, rest := args[0], args[1:]
-	switch sub {
-	case "list":
-		return api("GET", "/api/v1/events", nil)
-	case "create":
-		fs := flag.NewFlagSet("event create", flag.ExitOnError)
-		title := fs.String("title", "", "event title (required)")
-		at := fs.String("at", "", "start time (required)")
-		end := fs.String("end", "", "end time")
-		location := fs.String("location", "", "location")
-		note := fs.String("note", "", "note")
-		ifUnconfirmed := fs.String("if-unconfirmed", "notify", "notify | cancel (dead-man-switch)")
-		fs.Parse(rest)
-		start, err := parseWhen(*at)
-		if err != nil {
+		if err := c.parse(fs); err != nil {
 			return err
 		}
-		endT, err := parseWhen(*end)
-		if err != nil {
+		return apiSend("GET", fmt.Sprintf("/api/v1/audit?limit=%d", *limit), nil)
+	}},
+	{"tick", "", "run one scheduler pass now", func(c call) error {
+		return apiSend("POST", "/api/v1/tick", nil)
+	}},
+}
+
+// posOr reads an optional positional argument.
+func posOr(pos []string, i int) string {
+	if i < len(pos) {
+		return pos[i]
+	}
+	return ""
+}
+
+func cmdClient(args []string) error {
+	cmd, rest := args[0], args[1:]
+	for _, g := range clientGroups {
+		if g.name == cmd {
+			return g.dispatch(rest)
+		}
+	}
+	for _, l := range clientLeaves {
+		if l.name == cmd {
+			return l.dispatch("stattii", rest)
+		}
+	}
+	usage()
+	return fmt.Errorf("unknown command %q", cmd)
+}
+
+// cmdPersonSet is a patch: only flags actually given are sent, so
+// `--name` alone does not reset trust or wipe the channels. A channel
+// flag edits its one slot (`--email ""` drops the email, nothing else)
+// — the API replaces the whole list, so the CLI reads the current one
+// and rebuilds it the way the panel form does.
+func cmdPersonSet(c call) error {
+	fs := flag.NewFlagSet("person set", flag.ExitOnError)
+	name := fs.String("name", "", "new name")
+	trust := fs.String("trust", "", "respond | propose | direct")
+	email := fs.String("email", "", "email address (empty drops it)")
+	telegram := fs.String("telegram", "", "telegram chat id (empty drops it)")
+	if err := c.parse(fs); err != nil {
+		return err
+	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	patch := map[string]any{}
+	if set["name"] {
+		patch["name"] = *name
+	}
+	if set["trust"] {
+		patch["trust"] = *trust
+	}
+	if set["email"] || set["telegram"] {
+		var people []core.Person
+		if err := apiFetch("/api/v1/people", &people); err != nil {
 			return err
 		}
-		return api("POST", "/api/v1/events", map[string]any{
-			"title": *title, "location": *location, "note": *note,
-			"starts_at": start, "ends_at": endT, "if_unconfirmed": *ifUnconfirmed,
-		})
-	case "show", "confirm", "reinstate", "responses", "propagation":
-		if len(rest) < 1 {
-			return fmt.Errorf("usage: stattii event %s <event-id>", sub)
-		}
-		id := rest[0]
-		switch sub {
-		case "show":
-			return api("GET", "/api/v1/events/"+id, nil)
-		case "confirm":
-			return api("POST", "/api/v1/events/"+id+"/confirm", map[string]any{})
-		case "reinstate":
-			return api("POST", "/api/v1/events/"+id+"/reinstate", map[string]any{})
-		case "responses":
-			return api("GET", "/api/v1/events/"+id+"/responses", nil)
-		default:
-			return api("GET", "/api/v1/events/"+id+"/propagation", nil)
-		}
-	case "cancel":
-		if len(rest) < 1 {
-			return fmt.Errorf("usage: stattii event cancel <event-id> [--reason ...]")
-		}
-		fs := flag.NewFlagSet("event cancel", flag.ExitOnError)
-		reason := fs.String("reason", "", "why the event is cancelled")
-		fs.Parse(rest[1:])
-		return api("POST", "/api/v1/events/"+rest[0]+"/cancel", map[string]string{"reason": *reason})
-	case "move":
-		if len(rest) < 1 {
-			return fmt.Errorf("usage: stattii event move <event-id> --at ... [--end ...] [--note ...]")
-		}
-		fs := flag.NewFlagSet("event move", flag.ExitOnError)
-		at := fs.String("at", "", "new start time (required)")
-		end := fs.String("end", "", "new end time")
-		note := fs.String("note", "", "note")
-		fs.Parse(rest[1:])
-		if *at == "" {
-			return fmt.Errorf("--at is required: a move without a new start would notify everyone of a move to nowhere")
-		}
-		start, err := parseWhen(*at)
-		if err != nil {
-			return err
-		}
-		endT, err := parseWhen(*end)
-		if err != nil {
-			return err
-		}
-		return api("POST", "/api/v1/events/"+rest[0]+"/move", map[string]any{
-			"starts_at": start, "ends_at": endT, "note": *note,
-		})
-	case "links":
-		if len(rest) < 2 {
-			return fmt.Errorf("usage: stattii event links <event-id> <person-id>")
-		}
-		return api("POST", "/api/v1/events/"+rest[0]+"/links", map[string]string{"person_id": rest[1]})
-	case "invite":
-		if len(rest) < 1 {
-			return fmt.Errorf("usage: stattii event invite <event-id> [--revoke]")
-		}
-		fs := flag.NewFlagSet("event invite", flag.ExitOnError)
-		revoke := fs.Bool("revoke", false, "revoke the current invite link (guests keep getting notices)")
-		fs.Parse(rest[1:])
-		if *revoke {
-			return api("DELETE", "/api/v1/events/"+rest[0]+"/invite", nil)
-		}
-		return api("POST", "/api/v1/events/"+rest[0]+"/invite", map[string]any{})
-	case "revoke-links":
-		if len(rest) < 1 {
-			return fmt.Errorf("usage: stattii event revoke-links <event-id> [person-id]")
-		}
-		path := "/api/v1/events/" + rest[0] + "/links"
-		if len(rest) > 1 {
-			path += "?person_id=" + rest[1]
-		}
-		return api("DELETE", path, nil)
-	case "guests":
-		if len(rest) < 1 {
-			return fmt.Errorf("usage: stattii event guests <event-id> [--remove <guest-id>]")
-		}
-		fs := flag.NewFlagSet("event guests", flag.ExitOnError)
-		remove := fs.String("remove", "", "remove one guest by id")
-		fs.Parse(rest[1:])
-		if *remove != "" {
-			return api("DELETE", "/api/v1/events/"+rest[0]+"/guests/"+*remove, nil)
-		}
-		return api("GET", "/api/v1/events/"+rest[0]+"/guests", nil)
-	default:
-		return fmt.Errorf("unknown event subcommand %q", sub)
-	}
-}
-
-func cmdPerson(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii person list|add|set|test|rotate-portal")
-	}
-	switch args[0] {
-	case "set":
-		// A patch: only flags actually given are sent, so `--name` alone
-		// does not reset trust or wipe the channels. A channel flag edits
-		// its one slot (`--email ""` drops the email, nothing else) — the
-		// API replaces the whole list, so the CLI reads the current one
-		// and rebuilds it the way the panel form does.
-		if len(args) < 2 {
-			return fmt.Errorf("usage: stattii person set <person-id> [--name ...] [--trust ...] [--email ...] [--telegram ...]")
-		}
-		fs := flag.NewFlagSet("person set", flag.ExitOnError)
-		name := fs.String("name", "", "new name")
-		trust := fs.String("trust", "", "respond | propose | direct")
-		email := fs.String("email", "", "email address (empty drops it)")
-		telegram := fs.String("telegram", "", "telegram chat id (empty drops it)")
-		fs.Parse(args[2:])
-		set := map[string]bool{}
-		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		patch := map[string]any{}
-		if set["name"] {
-			patch["name"] = *name
-		}
-		if set["trust"] {
-			patch["trust"] = *trust
-		}
-		if set["email"] || set["telegram"] {
-			var people []core.Person
-			if err := apiJSON("/api/v1/people", &people); err != nil {
-				return err
+		var current *core.Person
+		for i := range people {
+			if people[i].ID == c.pos[0] {
+				current = &people[i]
 			}
-			var current *core.Person
-			for i := range people {
-				if people[i].ID == args[1] {
-					current = &people[i]
-				}
-			}
-			if current == nil {
-				return fmt.Errorf("person %s not found", args[1])
-			}
-			var e, tg *string
-			if set["email"] {
-				e = email
-			}
-			if set["telegram"] {
-				tg = telegram
-			}
-			patch["channels"] = core.PatchChannels(current.Channels, e, tg)
 		}
-		if len(patch) == 0 {
-			return fmt.Errorf("nothing to change — give at least one of --name, --trust, --email, --telegram")
+		if current == nil {
+			return fmt.Errorf("person %s not found", c.pos[0])
 		}
-		return api("PATCH", "/api/v1/people/"+args[1], patch)
-	case "list":
-		return api("GET", "/api/v1/people", nil)
-	case "test":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: stattii person test <person-id>")
+		var e, tg *string
+		if set["email"] {
+			e = email
 		}
-		return api("POST", "/api/v1/people/"+args[1]+"/test-message", nil)
-	case "rotate-portal":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: stattii person rotate-portal <person-id>")
+		if set["telegram"] {
+			tg = telegram
 		}
-		return api("POST", "/api/v1/people/"+args[1]+"/rotate-portal", nil)
-	case "add":
-		fs := flag.NewFlagSet("person add", flag.ExitOnError)
-		name := fs.String("name", "", "name (required)")
-		trust := fs.String("trust", "respond", "respond | propose | direct")
-		email := fs.String("email", "", "email address")
-		telegram := fs.String("telegram", "", "telegram chat id")
-		fs.Parse(args[1:])
-		var channels []map[string]string
-		if *email != "" {
-			channels = append(channels, map[string]string{"kind": "email", "to": *email})
-		}
-		if *telegram != "" {
-			channels = append(channels, map[string]string{"kind": "telegram", "to": *telegram})
-		}
-		return api("POST", "/api/v1/people", map[string]any{"name": *name, "trust": *trust, "channels": channels})
-	default:
-		return fmt.Errorf("unknown person subcommand %q", args[0])
+		patch["channels"] = core.PatchChannels(current.Channels, e, tg)
 	}
-}
-
-func cmdBroadcast(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii broadcast list|add|rm")
+	if len(patch) == 0 {
+		return fmt.Errorf("nothing to change — give at least one of --name, --trust, --email, --telegram")
 	}
-	switch args[0] {
-	case "list":
-		return api("GET", "/api/v1/broadcasts", nil)
-	case "add":
-		fs := flag.NewFlagSet("broadcast add", flag.ExitOnError)
-		name := fs.String("name", "", "label")
-		kind := fs.String("kind", "", "email | telegram | webhook (required)")
-		to := fs.String("to", "", "address / chat id / URL (required)")
-		fs.Parse(args[1:])
-		return api("POST", "/api/v1/broadcasts", map[string]string{"name": *name, "kind": *kind, "to": *to})
-	case "rm":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: stattii broadcast rm <id>")
-		}
-		return api("DELETE", "/api/v1/broadcasts/"+args[1], nil)
-	default:
-		return fmt.Errorf("unknown broadcast subcommand %q", args[0])
-	}
-}
-
-func cmdWebhook(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii webhook list|add|rm")
-	}
-	switch args[0] {
-	case "list":
-		return api("GET", "/api/v1/webhooks", nil)
-	case "add":
-		fs := flag.NewFlagSet("webhook add", flag.ExitOnError)
-		url := fs.String("url", "", "target URL (required)")
-		events := fs.String("events", "", "comma-separated filter (empty = all)")
-		fs.Parse(args[1:])
-		var evs []string
-		if *events != "" {
-			evs = strings.Split(*events, ",")
-		}
-		return api("POST", "/api/v1/webhooks", map[string]any{"url": *url, "events": evs})
-	case "rm":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: stattii webhook rm <id>")
-		}
-		return api("DELETE", "/api/v1/webhooks/"+args[1], nil)
-	default:
-		return fmt.Errorf("unknown webhook subcommand %q", args[0])
-	}
-}
-
-func cmdOutbox(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii outbox list [--pending] | retry <id>")
-	}
-	switch args[0] {
-	case "list":
-		fs := flag.NewFlagSet("outbox list", flag.ExitOnError)
-		pending := fs.Bool("pending", false, "only undelivered items")
-		fs.Parse(args[1:])
-		path := "/api/v1/outbox"
-		if *pending {
-			path += "?pending=1"
-		}
-		return api("GET", path, nil)
-	case "retry":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: stattii outbox retry <id>")
-		}
-		return api("POST", "/api/v1/outbox/"+args[1]+"/retry", nil)
-	default:
-		return fmt.Errorf("unknown outbox subcommand %q", args[0])
-	}
-}
-
-func cmdProposal(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: stattii proposal list|accept|reject")
-	}
-	switch args[0] {
-	case "list":
-		return api("GET", "/api/v1/proposals", nil)
-	case "accept", "reject":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: stattii proposal %s <id>", args[0])
-		}
-		return api("POST", "/api/v1/proposals/"+args[1]+"/decide", map[string]bool{"accept": args[0] == "accept"})
-	default:
-		return fmt.Errorf("unknown proposal subcommand %q", args[0])
-	}
+	return apiSend("PATCH", "/api/v1/people/"+c.pos[0], patch)
 }
 
 // cmdOverview renders the operator's one-glance view: upcoming events,
 // who is responsible, who answered what, and outbox/proposal health.
-func cmdOverview(args []string) error {
+func cmdOverview(c call) error {
 	fs := flag.NewFlagSet("overview", flag.ExitOnError)
 	all := fs.Bool("all", false, "include past events")
-	fs.Parse(args)
+	if err := c.parse(fs); err != nil {
+		return err
+	}
 
 	var ov core.Overview
-	if err := apiJSON("/api/v1/overview", &ov); err != nil {
+	if err := apiFetch("/api/v1/overview", &ov); err != nil {
 		return err
 	}
 

@@ -74,6 +74,30 @@ revoke-links <event-id> <person-id>`) and rotate the portal link.
 <source-uid> <person-id>` takes them off every *future* occurrence of an
 imported series.
 
+For what should never have been there at all — a mistyped person, a
+leftover cancelled event — there is `stattii person rm <id>` and `stattii
+event rm <id>`. Both refuse the cases where deleting would hide
+something from someone: an event that is still on has to be *cancelled*
+first (the notices are the whole point), and a person still responsible
+for an upcoming event has to be unassigned first. What only existed for
+the deleted subject goes with it (assignments, links, answers, guests);
+the outbox keeps the delivery proof and `audit.jsonl` keeps the history.
+An imported occurrence cannot be deleted here at all while the import is
+on: its row is derived data, and a missing one is recreated as
+*scheduled* by the next sync — for a cancelled occurrence the row IS the
+tombstone that keeps it cancelled. Remove it in the source calendar
+instead. Two more consequences worth knowing: deleting an event takes its
+`propagation` view with it (the audit trail and any pending delivery
+survive — you just cannot look the proof up by event id any more), and it
+drops the event from `/feed.ics`, so a calendar client that had not
+polled since the cancellation never sees the cancelled entry. The active
+channels have already carried that message; the feed is the passive
+baseline.
+
+Every group command explains itself: `stattii event --help`, `stattii
+person --help`, and so on. Arguments a command does not know are an
+error, never silently dropped.
+
 **Assigned is not reachable.** A person without any channel can be
 assigned, but stattii treats them as nobody: the reminder waits for
 someone reachable, the deadline does not wait at all, and the admin gets
@@ -301,6 +325,9 @@ events (`create/confirm/cancel/move/reinstate/links/responses/propagation`
 plus `invite` and `guests` for party invitations, and link revocation),
 people (create, `PATCH /people/{id}` as a patch — absent keys stay,
 `"channels": []` clears — plus test messages and portal rotation),
+deletion (`DELETE /events/{id}`, `DELETE /people/{id}` — refused while
+the event is still on or the person is still responsible for one, see
+above),
 assignments (`POST /assignments`, `DELETE /events/{id}/assignees/{pid}`),
 series-assignments (`POST`, `DELETE ?source_uid=&person_id=`),
 broadcasts, webhooks, proposals, audit, overview, `tick`,

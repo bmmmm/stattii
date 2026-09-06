@@ -110,6 +110,7 @@ func (s *Server) AdminHandler() http.Handler {
 		"GET /api/v1/events":                         s.listEvents,
 		"POST /api/v1/events":                        s.createEvent,
 		"GET /api/v1/events/{id}":                    s.getEvent,
+		"DELETE /api/v1/events/{id}":                 s.deleteEvent,
 		"POST /api/v1/events/{id}/confirm":           s.confirmEvent,
 		"POST /api/v1/events/{id}/cancel":            s.cancelEvent,
 		"POST /api/v1/events/{id}/move":              s.moveEvent,
@@ -126,6 +127,7 @@ func (s *Server) AdminHandler() http.Handler {
 		"GET /api/v1/people":                         s.listPeople,
 		"POST /api/v1/people":                        s.createPerson,
 		"PATCH /api/v1/people/{id}":                  s.updatePerson,
+		"DELETE /api/v1/people/{id}":                 s.deletePerson,
 		"DELETE /api/v1/events/{id}/assignees/{pid}": s.unassign,
 		"DELETE /api/v1/series-assignments":          s.deleteSeriesAssignment,
 		"POST /api/v1/people/{id}/test-message":      s.testMessage,
@@ -536,6 +538,17 @@ func (s *Server) updatePerson(w http.ResponseWriter, r *http.Request) {
 	respond(w, p, err, http.StatusOK)
 }
 
+// deleteEvent and deletePerson are the operator's eraser — the service
+// refuses the cases where deleting would hide something from someone
+// (see core.DeleteEvent / core.DeletePerson).
+func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request) {
+	respond(w, map[string]string{"status": "deleted"},
+		s.svc.DeleteEvent(r.PathValue("id")), http.StatusOK)
+}
+func (s *Server) deletePerson(w http.ResponseWriter, r *http.Request) {
+	respond(w, map[string]string{"status": "deleted"},
+		s.svc.DeletePerson(r.PathValue("id")), http.StatusOK)
+}
 func (s *Server) unassign(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]string{"status": "unassigned"},
 		s.svc.Unassign(r.PathValue("id"), r.PathValue("pid")), http.StatusOK)

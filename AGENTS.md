@@ -55,6 +55,19 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    nothing but suspect channels. Guarded by
    `TestLegacyChannelStaysReachable`, `TestBrokenChannelStillGetsTheAsk`
    and `TestAdminPanelShowsBrokenChannels`.
+   Deleting is not a second way out: `DeleteEvent` refuses a scheduled
+   event that has not happened yet and `DeletePerson` refuses while they
+   are responsible for one — cancel, or unassign, first. An imported
+   occurrence is refused outright while the import is configured: the
+   sync recreates a missing row as *scheduled*, so deleting a cancelled
+   one would undo the cancellation the import itself would never undo
+   (invariant 9) — the row is the tombstone. Both take the
+   rows that only existed for the subject and leave the outbox alone
+   (an undelivered notice still has to go out). Guarded by
+   `TestDeleteEventRefusesALiveOne`,
+   `TestDeleteEventClearsItsOwnRowsButKeepsTheProof`,
+   `TestDeletePersonRefusesWhileStillResponsible` and
+   `TestDeleteRefusesWhatTheImportWouldRecreate`.
 4. **stdlib only.** Any new dependency needs a stated justification.
 5. **Tokens are random, DB-looked-up, revocable.** Never JWT, never decodable.
    The admin session cookie is one of them: a random id resolved against
@@ -140,6 +153,13 @@ sandbox and is fine. New fetch tests must NOT bind: use the in-process
 
 ## Conventions
 
+- The CLI is one table (`clientGroups`/`clientLeaves` in
+  `cmd_client.go`): a command is a row — name, spec, help, run. The spec
+  doubles as the usage line and the arity contract, so an argument a
+  command does not know is an error instead of being dropped, and every
+  group answers `--help`. Adding a command means adding a row, never a
+  new switch. `TestClientDispatchTable` pins the request each row
+  produces, `TestClientUsageStrings` the wording of every usage error.
 - Config precedence: explicit `serve` flags > `config.json` > `STATTII_*` env
   (the env tier exists only for the fallbacks listed in the README — most
   keys are flags/config only). Config files are JSON with full-line `//`

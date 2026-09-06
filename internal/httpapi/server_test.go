@@ -246,6 +246,8 @@ func TestAdminAPIAbsentFromPublic(t *testing.T) {
 		{"DELETE", "/api/v1/people/pe_x/links"},
 		{"DELETE", "/api/v1/events/ev_x/links"},
 		{"PATCH", "/api/v1/people/pe_x"},
+		{"DELETE", "/api/v1/events/ev_x"},
+		{"DELETE", "/api/v1/people/pe_x"},
 		{"DELETE", "/api/v1/events/ev_x/assignees/pe_x"},
 		{"DELETE", "/api/v1/series-assignments?source_uid=s&person_id=pe_x"},
 	} {

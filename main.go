@@ -36,8 +36,8 @@ Client (uses STATTII_URL and STATTII_TOKEN — point them at the ADMIN listener)
   stattii calendar fetch
   stattii series-assign <source-uid> <person-id> [role]
   stattii series-unassign <source-uid> <person-id>
-  stattii event    list | create | show | confirm | cancel | reinstate | move | links | revoke-links | responses | propagation | invite | guests
-  stattii person   list | add | set | test | rotate-portal
+  stattii event    list | create | show | confirm | cancel | reinstate | move | links | revoke-links | responses | propagation | invite | guests | rm
+  stattii person   list | add | set | test | rotate-portal | rm
   stattii assign   <event-id> <person-id> [role]
   stattii unassign <event-id> <person-id>
   stattii broadcast list | add | rm
@@ -48,8 +48,9 @@ Client (uses STATTII_URL and STATTII_TOKEN — point them at the ADMIN listener)
   stattii tick
   stattii version
 
-Run 'stattii serve --help' for server flags; leaf commands take the flags
-shown next to them (e.g. 'stattii event move <id> --at ...').
+Run 'stattii serve --help' for server flags and 'stattii <group> --help'
+for what a group can do (e.g. 'stattii event --help'); leaf commands take
+the flags shown next to them (e.g. 'stattii event move <id> --at ...').
 `)
 }
 

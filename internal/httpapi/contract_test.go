@@ -248,4 +248,14 @@ func TestAdminAPIContract(t *testing.T) {
 	if ov.People != 1 || len(ov.Events) != 1 {
 		t.Fatalf("overview counts: %+v", ov)
 	}
+
+	// deletion, last — it removes what the rest of the walk needs. The
+	// event is live again after the reinstate above, so it is refused
+	// until it is cancelled; the person is unassigned by now.
+	step(400, "DELETE", "/api/v1/events/"+ev.ID, "")
+	step(200, "POST", "/api/v1/events/"+ev.ID+"/cancel", `{"reason":"contract"}`)
+	step(200, "DELETE", "/api/v1/events/"+ev.ID, "")
+	step(404, "DELETE", "/api/v1/events/"+ev.ID, "")
+	step(200, "DELETE", "/api/v1/people/"+created.Person.ID, "")
+	step(404, "DELETE", "/api/v1/people/"+created.Person.ID, "")
 }
