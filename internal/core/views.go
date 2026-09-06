@@ -247,7 +247,9 @@ func (s *Service) RetryOutbox(id string) (OutboxItem, error) {
 // sent/delivered proof, and with an immediate delivery attempt so the
 // result is visible right away. Split around the lock like Tick: this
 // is the one delivery a human waits on, and it must not hold s.mu while
-// it does.
+// it does. It waits on its OWN messages only — draining a backlog of
+// stuck items here would block the admin request (and the listener's
+// 5s shutdown budget) for one send timeout per item.
 func (s *Service) SendTest(personID string) ([]OutboxItem, error) {
 	ids, now, attempts, err := s.enqueueTest(personID)
 	if err != nil {
@@ -287,7 +289,7 @@ func (s *Service) enqueueTest(personID string) (map[string]bool, time.Time, []ou
 	}
 	s.auditLocked("test.sent", map[string]any{"person_id": p.ID, "channels": len(p.Channels)})
 	now := s.now()
-	attempts, _ := s.collectOutboxLocked(now)
+	attempts, _ := s.collectOutboxLocked(now, ids)
 	s.saveLocked()
 	return ids, now, attempts, nil
 }

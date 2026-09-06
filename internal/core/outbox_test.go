@@ -114,16 +114,33 @@ type blockingNotifier struct {
 	enteredOnce sync.Once
 	releaseOnce sync.Once
 	err         error
+	mu          sync.Mutex
+	sent        []string // "<to>:<subject>", in the order the sends returned
 }
 
 func newBlockingNotifier(err error) *blockingNotifier {
 	return &blockingNotifier{entered: make(chan struct{}), release: make(chan struct{}), err: err}
 }
 
+// Send parks the FIRST send until unblock; every later one goes through
+// immediately, so a test can see whether a second pass overtook the
+// parked one.
 func (b *blockingNotifier) Send(kind, to string, m Message) error {
-	b.enteredOnce.Do(func() { close(b.entered) })
-	<-b.release
+	first := false
+	b.enteredOnce.Do(func() { first = true; close(b.entered) })
+	if first {
+		<-b.release
+	}
+	b.mu.Lock()
+	b.sent = append(b.sent, to+":"+m.Subject)
+	b.mu.Unlock()
 	return b.err
+}
+
+func (b *blockingNotifier) recorded() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.sent...)
 }
 
 func (b *blockingNotifier) unblock() { b.releaseOnce.Do(func() { close(b.release) }) }
@@ -338,5 +355,63 @@ func TestNotifySendHasOneCallerOnly(t *testing.T) {
 	}
 	if len(callers) != 1 || callers[0] != "send" {
 		t.Fatalf("notify.Send is called from %v — it belongs in send() alone, which runs with s.mu free", callers)
+	}
+}
+
+// TestOverlappingPassesSendAnItemOnlyOnce: the tick endpoint, SendTest
+// and the scheduler are three callers of the same delivery pass, and
+// with the lock released between collect and send they overlap. An item
+// already out must not be picked up again — a second cancellation notice
+// is not a harmless duplicate, it is a message about an event that reads
+// as new.
+func TestOverlappingPassesSendAnItemOnlyOnce(t *testing.T) {
+	block := newBlockingNotifier(nil)
+	svc, clock := newTestService(t, block)
+	// Fresh, so the escalation pass stays out of the recorder.
+	svc.state.Outbox = append(svc.state.Outbox, OutboxItem{
+		ID: "ob_x", Purpose: "cancellation", Kind: "email", To: "a@x.example",
+		Subject: "cancelled", Body: "b", CreatedAt: *clock, NextAttempt: *clock,
+	})
+	finish := runParked(t, block, func() { svc.Tick(*clock) })
+
+	svc.Tick(clock.Add(time.Minute)) // the overlapping pass
+	if got := block.recorded(); len(got) != 0 {
+		t.Fatalf("the second pass sent an item that was already out: %v", got)
+	}
+
+	finish()
+	if got := block.recorded(); len(got) != 1 {
+		t.Fatalf("want exactly one delivery, got %v", got)
+	}
+}
+
+// TestASecondPassDoesNotOvertakeAParkedRecipient: order per recipient is
+// meaning, not cosmetics. A cancellation parked on a slow SMTP peer and
+// a reinstatement delivered past it arrives as "it is back on" followed
+// by "it is off" — the locked door, in the wrong order.
+func TestASecondPassDoesNotOvertakeAParkedRecipient(t *testing.T) {
+	block := newBlockingNotifier(nil)
+	svc, clock := newTestService(t, block)
+	svc.state.Outbox = append(svc.state.Outbox,
+		OutboxItem{ID: "ob_1", Purpose: "cancellation", Kind: "email", To: "a@x.example",
+			Subject: "cancelled", Body: "b", CreatedAt: *clock, NextAttempt: *clock},
+		// Due one minute later, so the parked pass takes the cancellation
+		// alone and the reinstatement is the second pass's to send.
+		OutboxItem{ID: "ob_2", Purpose: "reinstated", Kind: "email", To: "a@x.example",
+			Subject: "reinstated", Body: "b", CreatedAt: *clock, NextAttempt: clock.Add(time.Minute)},
+	)
+	finish := runParked(t, block, func() { svc.Tick(*clock) })
+
+	svc.Tick(clock.Add(2 * time.Minute)) // ob_2 is due — and must still wait
+	if got := block.recorded(); len(got) != 0 {
+		t.Fatalf("the reinstatement overtook the parked cancellation: %v", got)
+	}
+
+	finish()
+	svc.Tick(clock.Add(3 * time.Minute))
+	want := []string{"a@x.example:cancelled", "a@x.example:reinstated"}
+	got := block.recorded()
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("out of order: got %v, want %v", got, want)
 	}
 }

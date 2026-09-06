@@ -246,7 +246,7 @@ func (s *Service) tickLocked(now time.Time) []outboxAttempt {
 	if s.tickDeadlinesLocked(now) {
 		changed = true
 	}
-	attempts, escalated := s.collectOutboxLocked(now)
+	attempts, escalated := s.collectOutboxLocked(now, nil)
 	if escalated {
 		changed = true
 	}
@@ -454,8 +454,10 @@ func (s *Service) tickDeadlinesLocked(now time.Time) bool {
 
 // outboxAttempt is one due item copied out from under the lock: the
 // send must not read through into state while the mutex is free.
-// attempts is the item's attempt count as of the collect — a different
-// value at booking time means the item was re-armed mid-flight.
+// attempts is the item's attempt count as of the collect, and only the
+// ordinal of THIS attempt for the audit — whether the item was re-armed
+// mid-flight is the counter in Service.sending, not a comparison against
+// the stored value (a Retry on a queued item leaves that at 0).
 type outboxAttempt struct {
 	id, eventID, purpose, kind, to string
 	attempts                       int
@@ -469,11 +471,21 @@ type outboxResult struct {
 }
 
 // collectOutboxLocked escalates stuck items and picks the due ones for
-// this pass, marking them in flight so a concurrent pass (SendTest
-// racing the scheduler) cannot send them a second time. The bool says
-// whether state changed.
-func (s *Service) collectOutboxLocked(now time.Time) ([]outboxAttempt, bool) {
+// this pass. `only` restricts the selection to those item ids (SendTest
+// waits on its own message, not on the whole backlog); nil takes
+// everything due.
+//
+// Selection is per RECIPIENT, not per item: while a send to someone is
+// out with the lock released, nothing else for them is picked up. That
+// is what keeps three overlapping callers (scheduler, POST /tick,
+// SendTest) from sending one item twice AND keeps the order per
+// recipient — a reinstatement delivered past a parked cancellation
+// arrives as "it is back on", then "it is off". Within one pass several
+// messages to the same recipient are fine: that pass sends them in
+// order. The bool says whether state changed.
+func (s *Service) collectOutboxLocked(now time.Time, only map[string]bool) ([]outboxAttempt, bool) {
 	changed := false
+	mine := map[string]bool{} // recipients this pass has already taken
 	// Escalations are collected and enqueued after the loop: enqueueLocked
 	// appends to the outbox, and an append mid-loop can reallocate the
 	// backing array — every later write through o (EscalatedAt) would then
@@ -497,13 +509,19 @@ func (s *Service) collectOutboxLocked(now time.Time) ([]outboxAttempt, bool) {
 			})
 			changed = true
 		}
-		if _, out := s.sending[o.ID]; out {
-			continue // still out with an earlier pass
+		if only != nil && !only[o.ID] {
+			continue
 		}
 		if o.Attempts >= s.cfg.MaxAttempts || now.Before(o.NextAttempt) {
 			continue
 		}
+		who := recipientKey(o.Kind, o.To)
+		if s.sendingTo[who] > 0 && !mine[who] {
+			continue // an earlier pass is still sending to this recipient
+		}
+		mine[who] = true
 		s.sending[o.ID] = 0
+		s.sendingTo[who]++
 		attempts = append(attempts, outboxAttempt{
 			id: o.ID, eventID: o.EventID, purpose: o.Purpose,
 			kind: o.Kind, to: o.To, attempts: o.Attempts, msg: messageOf(o),
@@ -514,6 +532,11 @@ func (s *Service) collectOutboxLocked(now time.Time) ([]outboxAttempt, bool) {
 	}
 	return attempts, changed
 }
+
+// recipientKey identifies "the same recipient" for ordering: the pair a
+// send is addressed to, not the person — a person with two channels is
+// two independent conversations.
+func recipientKey(kind, to string) string { return kind + "\x00" + to }
 
 // messageOf copies an item's payload for a send that runs unlocked —
 // the slice and the map must not stay aliased into state.
@@ -567,11 +590,22 @@ func (s *Service) recordDeliveries(now time.Time, results []outboxResult) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The booking clock is read after the sends: a 30s SMTP timeout must
+	// not stamp DeliveredAt at the moment the pass started, nor let the
+	// retry backoff run from there. Never earlier than the pass's own
+	// clock, so a caller-supplied now (tests, POST /tick) still holds.
+	if book := s.now(); book.After(now) {
+		now = book
+	}
 	changed := false
 	for _, r := range results {
 		a := r.attempt
 		rearmed := s.sending[a.id] > 0
 		delete(s.sending, a.id)
+		who := recipientKey(a.kind, a.to)
+		if s.sendingTo[who]--; s.sendingTo[who] <= 0 {
+			delete(s.sendingTo, who)
+		}
 		fields := map[string]any{"outbox_id": a.id, "event_id": a.eventID, "purpose": a.purpose,
 			"kind": a.kind, "to": a.to, "attempts": a.attempts + 1}
 		o := s.outboxItemLocked(a.id)

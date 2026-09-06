@@ -116,13 +116,16 @@ type Service struct {
 	// Same deal — in-memory, a restart looks again.
 	channelsScanned bool
 	// sending: outbox ids whose send is currently out with the lock
-	// released, so a concurrent pass skips them instead of sending them
-	// twice. The value counts the re-arms that happened WHILE the send
+	// released. The value counts the re-arms that happened WHILE the send
 	// was out (see RetryOutbox): non-zero means the operator has since
 	// touched the item and the returning result must not overwrite that.
-	// In-memory only — a crash mid-send takes the marker with the process
-	// and the item is simply attempted again.
-	sending map[string]int
+	// sendingTo counts the same sends per recipient — that is what a
+	// concurrent pass consults, so it can neither send an item twice nor
+	// overtake a parked message to the same address.
+	// Both in-memory only: a crash mid-send takes the markers with the
+	// process, and the items are simply attempted again.
+	sending   map[string]int
+	sendingTo map[string]int
 }
 
 func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {
@@ -135,13 +138,14 @@ func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {
 		return nil, err
 	}
 	return &Service{
-		store:   store,
-		state:   st,
-		cfg:     cfg,
-		notify:  notify,
-		sending: map[string]int{},
-		now:     func() time.Time { return time.Now().UTC() },
-		logf:    log.Printf,
+		store:     store,
+		state:     st,
+		cfg:       cfg,
+		notify:    notify,
+		sending:   map[string]int{},
+		sendingTo: map[string]int{},
+		now:       func() time.Time { return time.Now().UTC() },
+		logf:      log.Printf,
 	}, nil
 }
 
