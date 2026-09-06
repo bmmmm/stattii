@@ -268,7 +268,8 @@ func (s *Service) SendTest(personID string) ([]OutboxItem, error) {
 }
 
 // enqueueTest is the locked half of SendTest: queue the test messages
-// and collect what is due, including whatever else the outbox is owed.
+// and collect exactly those for the send — the rest of the outbox is the
+// scheduler's business, not something an admin request waits on.
 func (s *Service) enqueueTest(personID string) (map[string]bool, time.Time, []outboxAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
