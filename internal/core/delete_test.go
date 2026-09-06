@@ -398,6 +398,49 @@ func TestDeleteRefusesWhileTheFanOutIsStillOnItsWay(t *testing.T) {
 	}
 }
 
+// TestAnExhaustedNoticeDoesNotBlockTheDeletion: the guard is about
+// messages still moving. A row that has run out of attempts has stopped
+// — it stays in the outbox as the alarm it is, and blocking on it would
+// make an event with one dead address undeletable forever.
+func TestAnExhaustedNoticeDoesNotBlockTheDeletion(t *testing.T) {
+	fake := &fakeNotifier{fail: map[string]bool{"email": true}}
+	svc, clock := newTestService(t, fake)
+	e := mustEvent(t, svc, 40*time.Hour)
+	p := mustPerson(t, svc, "ana", TrustRespond)
+	if err := svc.Assign(e.ID, p.ID, "host"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelEvent(e.ID, "", "storm", "api"); err != nil {
+		t.Fatal(err)
+	}
+	// Burn through every attempt (backoff maxes at 16m; 1h steps clear it).
+	for range svc.cfg.MaxAttempts + 1 {
+		svc.Tick(*clock)
+		*clock = clock.Add(time.Hour)
+	}
+	ps, err := svc.Propagation(e.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps.Failed == 0 || ps.Pending != 0 {
+		t.Fatalf("setup: want a failed, nothing pending, got %+v", ps)
+	}
+
+	if err := svc.DeleteEvent(e.ID); err != nil {
+		t.Fatalf("an exhausted notice blocked the deletion: %v", err)
+	}
+	// The alarm itself survives — it is in the outbox, not in the event.
+	still := 0
+	for _, o := range svc.OutboxItems(true) {
+		if o.EventID == e.ID {
+			still++
+		}
+	}
+	if still == 0 {
+		t.Error("the undelivered row went with the event — that row is the alarm")
+	}
+}
+
 // TestDeletePersonRefusesForACancelledFutureEvent: cancelled is not
 // over. A reinstate brings the event back with its assignees, and one
 // that lost its only responsible in between comes back unstaffed.

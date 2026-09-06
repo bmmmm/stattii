@@ -297,6 +297,15 @@ func TestUsageNamesTheEscape(t *testing.T) {
 			t.Errorf("%v: the error does not name the escape: %q", args, err)
 		}
 	}
+	// A trailing "--" escapes nothing, so the hint would only tell the
+	// caller to write it twice.
+	err := cmdClient([]string{"event", "rm", "ev_1", "--"})
+	if err == nil {
+		t.Fatal("a trailing -- was accepted")
+	}
+	if want := `unexpected argument "--" — usage: stattii event rm <event-id>`; err.Error() != want {
+		t.Errorf("trailing --:\n got %q\nwant %q", err, want)
+	}
 }
 
 // TestArityFromSpec: the usage line and the argument check are the same

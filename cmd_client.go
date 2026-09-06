@@ -210,6 +210,11 @@ func dashHint(flags []string) string {
 	if len(flags) == 0 || !strings.HasPrefix(flags[0], "-") {
 		return ""
 	}
+	if flags[0] == "--" {
+		// A trailing "--" escapes nothing; naming the escape here would
+		// suggest writing it twice.
+		return ""
+	}
 	return fmt.Sprintf(" (to pass %q as a value: -- %s)", flags[0], flags[0])
 }
 
