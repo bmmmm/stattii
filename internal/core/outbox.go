@@ -230,7 +230,9 @@ const confirmGrace = time.Hour
 // confirmGrace whenever someone reachable is assigned, and the
 // unreachable early warning lives in [start-ReminderLead, start-
 // DeadlineLead) while the deadline fires from start-DeadlineLead on —
-// disjoint windows, no cross-pass flag to keep in sync.
+// disjoint windows, no cross-pass flag to keep in sync. The nudge ends
+// confirmGrace before the deadline window starts, so it never shares a
+// tick with deadline.passed either.
 func (s *Service) Tick(now time.Time) {
 	s.recordDeliveries(now, s.deliver(s.tickLocked(now)))
 }
@@ -249,6 +251,9 @@ func (s *Service) tickLocked(now time.Time) []outboxAttempt {
 		changed = true
 	}
 	if s.tickRemindersLocked(now) {
+		changed = true
+	}
+	if s.tickNudgesLocked(now) {
 		changed = true
 	}
 	if s.tickDeadlinesLocked(now) {
@@ -343,29 +348,7 @@ func (s *Service) tickRemindersLocked(now time.Time) bool {
 			continue
 		}
 		for _, p := range assignees {
-			cTok, xTok := s.linksLocked(e.ID, p.ID)
-			header := e.Title + "\n" + e.StartsAt.Format(timeFmt)
-			if e.Location != "" {
-				header += "\nLocation: " + e.Location
-			}
-			if !e.VanishedAt.IsZero() {
-				// The responsible is the one person who knows whether a
-				// missing feed entry means "off" or "feed glitch".
-				header += "\n\nNote: this entry has disappeared from the source calendar. If it is off, click NO."
-			}
-			body := fmt.Sprintf(
-				"%s\n\nWill it take place?\nYES, confirm:  %s\nNO, cancel it: %s\n\nThese links are personal — please do not forward.",
-				header, s.actionURL(cTok), s.actionURL(xTok))
-			s.enqueueToPersonLocked(p, OutboxItem{
-				EventID: e.ID, Purpose: "reminder",
-				Subject: "Please confirm: " + e.Title, Body: body,
-				// Channels with inline buttons get one-tap callbacks; the
-				// body links stay as fallback for forwarded/old clients.
-				Buttons: []Button{
-					{Label: "✅ Takes place", Data: cTok},
-					{Label: "❌ Cancel event", Data: xTok},
-				},
-			})
+			s.enqueueAskLocked(e, p, "Please confirm: ")
 		}
 		e.ReminderSentAt = now
 		// The ask went out — but if not one of these people has a channel
@@ -391,6 +374,96 @@ func (s *Service) tickRemindersLocked(now time.Time) bool {
 		changed = true
 	}
 	return changed
+}
+
+// enqueueAskLocked queues the confirmation ask for one person — the
+// reminder and the nudge send the same message with the same links.
+func (s *Service) enqueueAskLocked(e *Event, p *Person, subject string) {
+	cTok, xTok := s.linksLocked(e.ID, p.ID)
+	header := e.Title + "\n" + e.StartsAt.Format(timeFmt)
+	if e.Location != "" {
+		header += "\nLocation: " + e.Location
+	}
+	if !e.VanishedAt.IsZero() {
+		// The responsible is the one person who knows whether a
+		// missing feed entry means "off" or "feed glitch".
+		header += "\n\nNote: this entry has disappeared from the source calendar. If it is off, click NO."
+	}
+	body := fmt.Sprintf(
+		"%s\n\nWill it take place?\nYES, confirm:  %s\nNO, cancel it: %s\n\nThese links are personal — please do not forward.",
+		header, s.actionURL(cTok), s.actionURL(xTok))
+	s.enqueueToPersonLocked(p, OutboxItem{
+		EventID: e.ID, Purpose: "reminder",
+		Subject: subject + e.Title, Body: body,
+		// Channels with inline buttons get one-tap callbacks; the
+		// body links stay as fallback for forwarded/old clients.
+		Buttons: []Button{
+			{Label: "✅ Takes place", Data: cTok},
+			{Label: "❌ Cancel event", Data: xTok},
+		},
+	})
+}
+
+// tickNudgesLocked sends the ask a second time, once per confirmation
+// cycle, at start-NudgeLead — only to reachable assignees with no answer
+// since this cycle's ask. Silence before the deadline is what cancels an
+// if_unconfirmed=cancel event, and one missed mail should not be enough.
+// It never fires inside confirmGrace of the deadline (the answer must
+// still count), never within confirmGrace of the ask it repeats (nor for
+// an ask that itself went out inside the nudge window), and never touches
+// someone unreachable. The subject is neutral: someone assigned or given
+// a channel after the reminder receives the ask here for the first time.
+func (s *Service) tickNudgesLocked(now time.Time) bool {
+	if s.cfg.NudgeLead <= 0 {
+		return false
+	}
+	changed := false
+	for i := range s.state.Events {
+		e := &s.state.Events[i]
+		if e.Status != StatusScheduled || e.ReminderSentAt.IsZero() || !e.NudgeSentAt.IsZero() {
+			continue
+		}
+		nudgeAt := e.StartsAt.Add(-s.cfg.NudgeLead)
+		if now.Before(nudgeAt) || !e.ReminderSentAt.Before(nudgeAt) ||
+			now.Sub(e.ReminderSentAt) < confirmGrace {
+			// Not due, or the ask itself is still fresh — one that went
+			// out inside the window, or just before it opened.
+			continue
+		}
+		if !now.Before(e.StartsAt.Add(-s.cfg.DeadlineLead - confirmGrace)) {
+			continue
+		}
+		_, reachable := s.reachableLocked(e.ID)
+		var silent []*Person
+		for _, p := range reachable {
+			if !s.answeredSinceLocked(e.ID, p.ID, e.ReminderSentAt) {
+				silent = append(silent, p)
+			}
+		}
+		if len(silent) == 0 {
+			continue
+		}
+		for _, p := range silent {
+			s.enqueueAskLocked(e, p, "Reminder — please confirm: ")
+		}
+		e.NudgeSentAt = now
+		s.auditLocked("reminder.nudged", map[string]any{
+			"event_id": e.ID, "people": personNames(silent), "count": len(silent)})
+		changed = true
+	}
+	return changed
+}
+
+// answeredSinceLocked reports whether the person responded to the event
+// at or after since — an answer from an earlier cycle (before a move or
+// reinstate) does not count for this one.
+func (s *Service) answeredSinceLocked(eventID, personID string, since time.Time) bool {
+	for _, r := range s.state.Responses {
+		if r.EventID == eventID && r.PersonID == personID && !r.At.Before(since) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) tickDeadlinesLocked(now time.Time) bool {

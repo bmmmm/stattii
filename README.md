@@ -178,6 +178,11 @@ stands in front of a locked door". Recipients see "Reason: Not confirmed
 in time."; the auto-cancel page to the admin folds in the "nobody was
 told" fact when it applies.
 
+With `nudge_lead` set in `config.json` (e.g. `"36h"`, halfway between the
+two leads; it must be longer than `deadline_lead` + 1h and shorter than
+`reminder_lead`), the ask goes out once more before the deadline — only to
+reachable assignees who have not answered, audited as `reminder.nudged`.
+
 ## Party invitations
 
 Any event can double as a party invitation: one shared link, invitees

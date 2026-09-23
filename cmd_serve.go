@@ -123,6 +123,11 @@ func cmdServe(args []string) {
 		AdminNotify:     parseAdminNotify(firstOf(fc.AdminNotify, os.Getenv("STATTII_ADMIN_NOTIFY"))),
 		CalendarSource:  firstOf(fc.CalendarSource, os.Getenv("STATTII_CALENDAR_SOURCE")),
 	}
+	if fc.NudgeLead != "" {
+		// Config-only, like the calendar keys: an out-of-range value is
+		// refused by core.NewService (fatal below).
+		cfg.NudgeLead = parseDur("nudge_lead", fc.NudgeLead)
+	}
 	if fc.CalendarWindow != "" {
 		cfg.CalendarWindow = parseDur("calendar_window", fc.CalendarWindow)
 	}

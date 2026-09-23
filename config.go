@@ -27,6 +27,7 @@ type fileConfig struct {
 	DataDir       string `json:"data_dir"`
 	ReminderLead  string `json:"reminder_lead"`
 	DeadlineLead  string `json:"deadline_lead"`
+	NudgeLead     string `json:"nudge_lead"` // optional second ask to non-responders; empty = off
 	EscalateAfter string `json:"escalate_after"`
 	// Delivered outbox items whose event is this long past are pruned
 	// from state.json (delivery proof stays in audit.jsonl). Undelivered

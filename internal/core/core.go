@@ -56,6 +56,10 @@ type Event struct {
 	// confirmation cycle (move, reinstate) — never derived from
 	// ReminderSentAt, which stays zero in exactly this situation.
 	UnreachableNotifiedAt time.Time `json:"unreachable_notified_at,omitzero"`
+	// NudgeSentAt marks the one second ask to those who have not
+	// answered (Config.NudgeLead). Reset with ReminderSentAt — a new
+	// confirmation cycle earns a new nudge.
+	NudgeSentAt time.Time `json:"nudge_sent_at,omitzero"`
 	// FanOutAt/FanOutCount record the last propagation transaction: when
 	// it ran and how many messages it enqueued. "Nobody was told" is
 	// FanOutAt set with a zero count — read from here, never from the

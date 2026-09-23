@@ -33,6 +33,11 @@
   // dead-man-switch for events created with if_unconfirmed=cancel).
   "deadline_lead": "24h",
 
+  // Optional: ask once more, only those who have not answered yet, this
+  // long before start. Empty = off; must be longer than deadline_lead+1h
+  // and shorter than reminder_lead (halfway, e.g. "36h", is a good start).
+  "nudge_lead": "",
+
   // Undelivered messages page the admin after this long.
   "escalate_after": "10m",
 

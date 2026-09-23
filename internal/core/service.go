@@ -35,6 +35,7 @@ type Config struct {
 	BaseURL       string        // public base for action/portal links
 	ReminderLead  time.Duration // how long before start the ask goes out
 	DeadlineLead  time.Duration // no response by start-DeadlineLead => deadline.passed
+	NudgeLead     time.Duration // optional: at start-NudgeLead ask the non-responders again; zero = off
 	RetryDelay    time.Duration // base outbox retry delay (exponential backoff)
 	MaxAttempts   int           // outbox attempts before an item counts as failed
 	EscalateAfter time.Duration // undelivered for this long => notify admin
@@ -63,6 +64,13 @@ func (c *Config) validate() error {
 	}
 	if c.CalendarFetchEvery > 0 && c.CalendarFetchEvery < minFetchEvery {
 		return fmt.Errorf("calendar_fetch_every %s is below the minimum of %s", c.CalendarFetchEvery, minFetchEvery)
+	}
+	// A nudge outside (deadline+confirmGrace, reminder) could never fire:
+	// before the ask it has nothing to repeat, and closer to the deadline
+	// nobody gets a real chance to answer it.
+	if c.NudgeLead != 0 && (c.NudgeLead >= c.ReminderLead || c.NudgeLead <= c.DeadlineLead+confirmGrace) {
+		return fmt.Errorf("nudge_lead %s must lie between deadline_lead+%s (%s) and reminder_lead (%s)",
+			c.NudgeLead, confirmGrace, c.DeadlineLead+confirmGrace, c.ReminderLead)
 	}
 	return nil
 }
@@ -272,6 +280,7 @@ func (s *Service) ReinstateEvent(eventID, actor string) (Event, error) {
 	e.CancelledAt = time.Time{}
 	e.Seq++
 	e.ReminderSentAt = time.Time{}
+	e.NudgeSentAt = time.Time{}
 	e.DeadlineFiredAt = time.Time{}
 	e.UnreachableNotifiedAt = time.Time{}
 	s.auditLocked("event.reinstated", map[string]any{"event_id": eventID, "actor": actor})
@@ -427,6 +436,7 @@ func (s *Service) moveLocked(eventID string, start, end time.Time, note, actor s
 	// A moved event needs a fresh confirmation cycle.
 	e.Status = StatusScheduled
 	e.ReminderSentAt = time.Time{}
+	e.NudgeSentAt = time.Time{}
 	e.DeadlineFiredAt = time.Time{}
 	e.UnreachableNotifiedAt = time.Time{}
 	if note != "" {
