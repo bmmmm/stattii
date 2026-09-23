@@ -633,7 +633,9 @@ func (s *Service) AddWebhook(url string, events []string) (Webhook, error) {
 	defer s.mu.Unlock()
 	w := Webhook{ID: NewID("wh"), URL: url, Secret: NewToken(), Events: events}
 	s.state.Webhooks = append(s.state.Webhooks, w)
-	s.auditLocked("webhook.created", map[string]any{"webhook_id": w.ID, "url": url})
+	// The target URL is the subscriber's credential (delivery strips it
+	// too), so the record keeps only which host it points at.
+	s.auditLocked("webhook.created", map[string]any{"webhook_id": w.ID, "url": redactTarget(url)})
 	s.saveLocked()
 	return w, nil
 }

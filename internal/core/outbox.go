@@ -514,7 +514,7 @@ func (s *Service) collectOutboxLocked(now time.Time, only map[string]bool) ([]ou
 			escalations = append(escalations, stuck{
 				subject: "Delivery stuck: " + o.Subject,
 				body: fmt.Sprintf("Undelivered for %s via %s to %s: %s",
-					now.Sub(o.CreatedAt).Round(time.Minute), o.Kind, redactURLs(o.To), o.LastError),
+					now.Sub(o.CreatedAt).Round(time.Minute), o.Kind, redactAddress(o.Kind, o.To), o.LastError),
 			})
 			changed = true
 		}
@@ -622,7 +622,7 @@ func (s *Service) recordDeliveries(now time.Time, results []outboxResult) {
 		// chat id is not a URL and stays untouched. The cut sits here, not
 		// at the send: the send now runs unlocked and books nothing.
 		fields := map[string]any{"outbox_id": a.id, "event_id": a.eventID, "purpose": a.purpose,
-			"kind": a.kind, "to": redactURLs(a.to), "attempts": a.attempts + 1}
+			"kind": a.kind, "to": redactAddress(a.kind, a.to), "attempts": a.attempts + 1}
 		o := s.outboxItemLocked(a.id)
 		if r.err == nil {
 			s.auditLocked("delivery.ok", fields)
@@ -635,7 +635,7 @@ func (s *Service) recordDeliveries(now time.Time, results []outboxResult) {
 			changed = true
 			continue
 		}
-		err := redactErr(r.err)
+		err := redactDeliveryErr(a.kind, a.to, r.err)
 		fields["error"] = err.Error()
 		s.auditLocked("delivery.fail", fields)
 		if o == nil || o.Delivered() || rearmed {

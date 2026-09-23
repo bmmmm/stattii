@@ -37,7 +37,13 @@ func assertRedacted(t *testing.T, err error, secret string) {
 	if !strings.Contains(err.Error(), "127.0.0.1:1") {
 		t.Fatalf("redaction destroyed the host — operator cannot tell what failed:\n%s", err.Error())
 	}
-	if !strings.Contains(err.Error(), "refused") && !strings.Contains(err.Error(), "connect") {
+	// A runner that drops instead of rejects runs into the client
+	// timeout: a different failure kind, but still a named one.
+	kind := false
+	for _, k := range []string{"refused", "connect", "Timeout", "deadline exceeded"} {
+		kind = kind || strings.Contains(err.Error(), k)
+	}
+	if !kind {
 		t.Fatalf("redaction destroyed the failure kind:\n%s", err.Error())
 	}
 	t.Logf("operator sees: %s", err.Error())

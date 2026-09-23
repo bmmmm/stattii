@@ -135,6 +135,36 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    `TestASecondPassDoesNotOvertakeAParkedRecipient`, and
    `TestNotifySendHasOneCallerOnly`, which parses this package and fails
    on a second call site whatever it is named.
+12. **Credentials are cut at the boundary, before any record.** A bot
+   token, a webhook target URL and the calendar source URL are
+   credentials; a transport failure renders the whole request URL into
+   its error, and every error ends up in `LastError`, `audit.jsonl`, the
+   admin panel or admin mail. The telegram channel strips its token
+   (`redact`); delivery booking (`recordDeliveries`) scrubs by kind
+   (`redactDeliveryErr`, `redactAddress`): a webhook target's
+   `*url.Error` is rebuilt with the URL field reduced to scheme+host, any
+   other error has the target cut out **by value** (`redactTargetIn`) —
+   its shape is the operator's, not necessarily an http(s) URL — telegram
+   errors lose their URLs, and `email` errors stay whole (the SMTP
+   answer's help link is the operator's only diagnosis while mail is
+   down). `webhook.created` audits scheme+host only; the calendar fetch
+   and its bookkeeping scrub theirs. `redactURLs` matches the scheme
+   case-insensitively and fails **closed** on a URL that does not parse.
+   A new error sink goes behind one of these cuts. Known gap, tracked in
+   #16: a stored person channel whose webhook URL fails `Validate` is
+   echoed by `Address.Problem` into `channel.invalid`, the admin page and
+   the admin mail (`channels.go`).
+   Guarded by
+   `TestOutboxTransportErrorHidesCredentials`,
+   `TestWebhookTargetShapesTheScrubMissedStayHidden`,
+   `TestWebhookErrorKeepsItsReason`,
+   `TestWebhookCreatedAuditHidesTargetURL`,
+   `TestSMTPErrorKeepsItsHelpLink`,
+   `TestCalendarFetchFailureHidesSourceURL`,
+   `TestCalendarSourceParseFailureHidesSourceURL`,
+   `TestImportBookkeepingRedactsWhatReachesIt`,
+   `TestRedactURLsCutsEveryShape` and
+   `TestTelegramSendTransportErrorHidesToken`.
 
 ## Build & test
 
