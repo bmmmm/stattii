@@ -3,6 +3,7 @@
 package httpapi_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -456,5 +457,46 @@ func TestAdminSurfacesShowWebhookHostOnly(t *testing.T) {
 				t.Fatalf("GET %s no longer names the target's host:\n%s", path, rec.Body)
 			}
 		})
+	}
+}
+
+// TestTelegramOnboardingLinkOnAPIAndPanel — #13: the operator mints the
+// link over the API or the panel and sees it on the people page until it
+// is used.
+func TestTelegramOnboardingLinkOnAPIAndPanel(t *testing.T) {
+	svc, _, admin := newTestServer(t)
+	p, err := svc.AddPerson("ana", core.TrustRespond, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := do(t, admin, "POST", "/api/v1/people/"+p.ID+"/telegram-link", testToken, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("API: %d %s", rec.Code, rec.Body)
+	}
+	var v core.TelegramOnboardView
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil || !strings.HasPrefix(v.Start, "/start ") || v.ExpiresAt.IsZero() {
+		t.Fatalf("API returned no usable link: %s", rec.Body)
+	}
+	if rec := do(t, admin, "POST", "/api/v1/people/pe_nobody/telegram-link", testToken, ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown person: %d, want 404", rec.Code)
+	}
+
+	ui := loginAdmin(t, admin)
+	if w := ui.post(t, "/admin/people/"+p.ID+"/telegram-link", nil); w.Code != http.StatusSeeOther {
+		t.Fatalf("panel: %d\n%s", w.Code, w.Body)
+	}
+	cur := svc.TelegramOnboardings()[p.ID]
+	if cur.Start == v.Start {
+		t.Fatal("the panel did not mint a new link")
+	}
+	req := httptest.NewRequest("GET", "/admin/people", nil)
+	req.AddCookie(ui.c)
+	page := httptest.NewRecorder()
+	admin.ServeHTTP(page, req)
+	if !strings.Contains(page.Body.String(), cur.Start) {
+		t.Fatalf("people page does not show the open link:\n%s", page.Body)
+	}
+	if strings.Contains(page.Body.String(), v.Start) {
+		t.Fatal("people page still shows the replaced link")
 	}
 }

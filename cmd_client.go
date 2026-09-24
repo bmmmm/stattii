@@ -432,6 +432,9 @@ var clientGroups = []group{
 			{"rotate-portal", "<person-id>", "mint a fresh portal token", func(c call) error {
 				return apiSend("POST", "/api/v1/people/"+c.pos[0]+"/rotate-portal", nil)
 			}},
+			{"telegram-link", "<person-id>", "mint a one-shot Telegram onboarding link (7 days)", func(c call) error {
+				return apiSend("POST", "/api/v1/people/"+c.pos[0]+"/telegram-link", nil)
+			}},
 			{"rm", "<person-id>", "delete a person nobody is waiting on", func(c call) error {
 				return apiSend("DELETE", "/api/v1/people/"+c.pos[0], nil)
 			}},

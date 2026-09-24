@@ -282,7 +282,7 @@ type OutboxItem struct {
 	// GuestID marks items addressed to a party guest — never reuse PersonID
 	// for that, the admin timeline joins on it and would mis-attribute.
 	GuestID string `json:"guest_id,omitempty"`
-	Purpose string `json:"purpose"` // "reminder" | "vanished" | "cancellation" | "moved" | "reinstated" | "proposal" | "escalation" | "webhook"
+	Purpose string `json:"purpose"` // "reminder" | "vanished" | "cancellation" | "moved" | "reinstated" | "proposal" | "escalation" | "webhook" | "onboarding"
 	// TxnID groups every item one fanOutLocked call enqueued (a single
 	// cancel/move/reinstate transaction), so Propagation can report on
 	// one transaction instead of every transaction an event ever had
@@ -323,6 +323,8 @@ type State struct {
 	// guests. omitempty keeps pre-invite state.json files loading unchanged.
 	Invites []InviteLink `json:"invites,omitempty"`
 	Guests  []Guest      `json:"guests,omitempty"`
+	// Outstanding Telegram onboarding links (#13); a used one is removed.
+	TelegramOnboardings []TelegramOnboarding `json:"telegram_onboardings,omitempty"`
 }
 
 func (s *State) Event(id string) *Event {

@@ -205,10 +205,7 @@ func cmdServe(args []string) {
 		svc.RunCalendarFetcher(ctx)
 	}()
 	if tgToken != "" {
-		poller := &channel.TelegramPoller{
-			Token: tgToken,
-			Apply: telegramApply(svc),
-		}
+		poller := newTelegramPoller(svc, tgToken)
 		bg.Add(1)
 		go func() {
 			defer bg.Done()
@@ -255,6 +252,20 @@ func cmdServe(args []string) {
 	bg.Wait()
 	if fatal != nil {
 		log.Fatalf("stattii: %v", fatal)
+	}
+}
+
+// newTelegramPoller wires the poller to the service: button presses
+// (Apply), onboarding deep links (Start, #13) and the bot's username the
+// onboarding links are built on (BotName). Its own function so the
+// wiring is testable — a callback dropped here would otherwise leave the
+// suite green.
+func newTelegramPoller(svc *core.Service, token string) *channel.TelegramPoller {
+	return &channel.TelegramPoller{
+		Token:   token,
+		Apply:   telegramApply(svc),
+		Start:   svc.BindTelegram,
+		BotName: svc.SetTelegramBot,
 	}
 }
 

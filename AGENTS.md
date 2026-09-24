@@ -16,7 +16,7 @@ people stood in front of a locked door. That failure mode drives the design.
 | Piece | Role |
 |-------|------|
 | `internal/core` | domain types, JSON store (`state.json` atomic + `audit.jsonl` append-only), `Service` (every mutation audits + persists under one mutex), scheduler `Tick` |
-| `internal/channel` | `Sender` interface: email (SMTP), telegram (send + `getUpdates` poller for inline-button callbacks), webhook |
+| `internal/channel` | `Sender` interface: email (SMTP), telegram (send + `getUpdates` poller for inline-button callbacks and `/start` onboarding), webhook |
 | `internal/httpapi` | TWO muxes: public token surface (`/a/`, `/p/`, `/feed.ics`, rate limiter) and the admin listener (`/api/v1` behind bearer auth + `/admin` web UI behind cookie login) |
 | `internal/ics` | outbound ICS feed generation |
 | `internal/icsimport` | inbound: parses the configured foreign feed + expands recurrence into a window (owner decision 2026-08-12 — import IS in scope now). The feed URL is operator data: host config only, never in the repo; test fixtures are synthetic |

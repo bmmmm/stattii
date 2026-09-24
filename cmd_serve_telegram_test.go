@@ -78,3 +78,41 @@ func TestTelegramApplyVerifiesActorBeforeApplying(t *testing.T) {
 		t.Fatalf("event status = %s, want confirmed", got.Status)
 	}
 }
+
+// TestTelegramPollerIsWiredForOnboarding — #13: the poller serve builds
+// must hand /start to BindTelegram and the bot's name to the service;
+// dropping either callback would leave the rest of the suite green.
+func TestTelegramPollerIsWiredForOnboarding(t *testing.T) {
+	store, err := core.NewJSONStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := core.NewService(store, core.Config{BaseURL: "http://test.local"}, noopNotifier{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := svc.AddPerson("ana", core.TrustRespond, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poller := newTelegramPoller(svc, "TOK")
+	if poller.Start == nil || poller.BotName == nil || poller.Apply == nil {
+		t.Fatal("the poller is missing a callback")
+	}
+	poller.BotName("stattii_bot")
+	v, err := svc.CreateTelegramOnboarding(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := strings.TrimPrefix(v.Start, "/start ")
+	if v.URL != "https://t.me/stattii_bot?start="+token {
+		t.Fatalf("BotName did not reach the service: %q", v.URL)
+	}
+	if err := poller.Start(token, "4242", "4242"); err != nil {
+		t.Fatalf("Start did not bind: %v", err)
+	}
+	people := svc.People()
+	if len(people) != 1 || len(people[0].Channels) != 1 || people[0].Channels[0] != (core.Address{Kind: "telegram", To: "4242"}) {
+		t.Fatalf("Start is not BindTelegram: %+v", people)
+	}
+}

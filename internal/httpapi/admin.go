@@ -53,6 +53,7 @@ func (s *Server) registerAdminUI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/people/{id}/edit", s.adminAuth(s.adminPeopleEdit))
 	mux.HandleFunc("POST /admin/people/{id}/test", s.adminAuth(s.adminPeopleTest))
 	mux.HandleFunc("POST /admin/people/{id}/rotate-portal", s.adminAuth(s.adminRotatePortal))
+	mux.HandleFunc("POST /admin/people/{id}/telegram-link", s.adminAuth(s.adminTelegramLink))
 	mux.HandleFunc("POST /admin/event/{id}/links/revoke", s.adminAuth(s.adminEventRevokeLinks))
 	mux.HandleFunc("POST /admin/calendar/fetch", s.adminAuth(s.adminCalendarFetch))
 	mux.HandleFunc("POST /admin/proposals/{id}", s.adminAuth(s.adminProposalDecide))
@@ -450,6 +451,11 @@ func (s *Server) adminRotatePortal(w http.ResponseWriter, r *http.Request) {
 	s.redirectOr(w, r, err, "/admin/people")
 }
 
+func (s *Server) adminTelegramLink(w http.ResponseWriter, r *http.Request) {
+	_, err := s.svc.CreateTelegramOnboarding(r.PathValue("id"))
+	s.redirectOr(w, r, err, "/admin/people")
+}
+
 func (s *Server) adminEventRevokeLinks(w http.ResponseWriter, r *http.Request) {
 	_, err := s.svc.RevokeLinks(r.PathValue("id"), r.FormValue("person_id"))
 	s.adminAct(w, r, err)
@@ -499,8 +505,10 @@ type adminPeopleData struct {
 type adminPerson struct {
 	core.Person
 	PortalURL string
-	LastMsg   string // most recent message to this person, any event
-	LastBad   bool
+	// Telegram is the person's open onboarding link, if one still binds.
+	TelegramLink *core.TelegramOnboardView
+	LastMsg      string // most recent message to this person, any event
+	LastBad      bool
 	// Email/Telegram prefill the two-field edit form; Other counts the
 	// channels that form cannot show (webhooks) and keeps on save.
 	Email, Telegram string
@@ -518,9 +526,13 @@ func (s *Server) adminPeople(w http.ResponseWriter, r *http.Request) {
 			latest[items[i].PersonID] = &items[i]
 		}
 	}
+	onboard := s.svc.TelegramOnboardings()
 	for _, p := range s.svc.People() {
 		u, _ := s.svc.PersonPortalURL(p.ID)
 		ap := adminPerson{Person: p, PortalURL: u}
+		if v, ok := onboard[p.ID]; ok {
+			ap.TelegramLink = &v
+		}
 		for _, ch := range p.Channels {
 			switch {
 			case ch.Kind == "email" && ap.Email == "":

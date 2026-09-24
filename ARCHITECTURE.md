@@ -25,7 +25,8 @@ ADMIN LISTENER (separate mux — bind it internally)
   operator → /admin (cookie) + /api/v1 (bearer) + CLI
 
 POLLED (outbound connections, no open port needed)
-  Telegram bot   ← getUpdates poller   inline-button taps → ApplyAction
+  Telegram bot   ← getUpdates poller   inline-button taps → ApplyAction,
+                                       /start <token> → BindTelegram
   source calendar ← calendar fetch     ICS import (moves yes, cancel NEVER)
 
                           │
@@ -101,6 +102,7 @@ There are no accounts. Two kinds of keys, strictly separated:
 | action link | (event, person, action) | one click = one authenticated answer |
 | portal token | person | all their assigned events, powers per trust level |
 | invite link | event only — deliberately no person | the RSVP form; identity is the typed name |
+| telegram onboarding | person — single use, 7 days, re-minting revokes | binds the private chat that sends `/start <token>` as their telegram channel |
 | admin token | — (config secret) | everything, bearer or cookie, compared constant-time |
 
 (`Webhook.Secret` is not a lookup token — it is the HMAC key signing

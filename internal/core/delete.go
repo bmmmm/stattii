@@ -154,10 +154,11 @@ func (s *Service) DeletePerson(id string) error {
 	}
 	dropped := map[string]any{
 		"person_id": id, "name": p.Name,
-		"assignments":        dropWhere(&s.state.Assignments, func(a Assignment) bool { return a.PersonID == id }),
-		"links":              dropWhere(&s.state.Links, func(l ActionLink) bool { return l.PersonID == id }),
-		"proposals":          dropWhere(&s.state.Proposals, func(pr Proposal) bool { return pr.PersonID == id }),
-		"series_assignments": dropWhere(&s.state.SeriesAssignments, func(sa SeriesAssignment) bool { return sa.PersonID == id }),
+		"assignments":          dropWhere(&s.state.Assignments, func(a Assignment) bool { return a.PersonID == id }),
+		"links":                dropWhere(&s.state.Links, func(l ActionLink) bool { return l.PersonID == id }),
+		"proposals":            dropWhere(&s.state.Proposals, func(pr Proposal) bool { return pr.PersonID == id }),
+		"series_assignments":   dropWhere(&s.state.SeriesAssignments, func(sa SeriesAssignment) bool { return sa.PersonID == id }),
+		"telegram_onboardings": dropWhere(&s.state.TelegramOnboardings, func(o TelegramOnboarding) bool { return o.PersonID == id }),
 	}
 	name := p.Name
 	dropWhere(&s.state.People, func(pp Person) bool { return pp.ID == id })

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bmmmm/stattii/internal/core"
@@ -27,12 +28,22 @@ import (
 // outward fan-out, on an event an admin may have since reinstated. Dropping
 // a stale click on restart is safe — the person can just click again — so
 // that is the direction we bias toward.
+//
+// With Start set it also reads messages, for Telegram onboarding (#13): a
+// deep link t.me/<bot>?start=<token> makes the app send "/start <token>",
+// and Start binds that chat. Start's failures (unknown, used, expired
+// token; a group chat) get no reply — a second /start is ignored — and
+// the token is never logged. BotName receives the bot's username from
+// getMe, which the onboarding links are built on.
 type TelegramPoller struct {
 	Token   string
 	BaseURL string                                     // default api.telegram.org
 	Apply   func(token, fromID string) (string, error) // returns user-facing result text; fromID is callback_query.from.id, decimal
+	Start   func(token, chatID, fromID string) error   // optional; ids decimal
+	BotName func(username string)                      // optional
 	Logf    func(format string, args ...any)
 	client  *http.Client
+	botName string
 }
 
 type tgUpdate struct {
@@ -44,6 +55,15 @@ type tgUpdate struct {
 			ID int64 `json:"id"`
 		} `json:"from"`
 	} `json:"callback_query"`
+	Message *struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+		From *struct {
+			ID int64 `json:"id"`
+		} `json:"from"`
+	} `json:"message"`
 }
 
 func (p *TelegramPoller) Run(ctx context.Context) {
@@ -66,6 +86,16 @@ func (p *TelegramPoller) Run(ctx context.Context) {
 		return
 	}
 	for ctx.Err() == nil {
+		if p.BotName != nil && p.botName == "" {
+			// Retried every round until it answers: without the name the
+			// onboarding links cannot be built, everything else works.
+			if name, err := p.getMe(ctx); err != nil {
+				p.Logf("stattii: telegram getMe: %v", err)
+			} else {
+				p.botName = name
+				p.BotName(name)
+			}
+		}
 		updates, err := p.getUpdates(ctx, offset, 50*time.Second)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -82,6 +112,10 @@ func (p *TelegramPoller) Run(ctx context.Context) {
 		for _, u := range updates {
 			if u.UpdateID >= offset {
 				offset = u.UpdateID + 1
+			}
+			if u.Message != nil {
+				p.handleMessage(u)
+				continue
 			}
 			if u.CallbackQuery == nil {
 				continue
@@ -137,11 +171,31 @@ func (p *TelegramPoller) seedOffset(ctx context.Context) (int, error) {
 	}
 }
 
+// handleMessage passes "/start <token>" to Start and drops every other
+// message. A message without a sender (a channel post) binds nothing.
+func (p *TelegramPoller) handleMessage(u tgUpdate) {
+	m := u.Message
+	if p.Start == nil || m.From == nil {
+		return
+	}
+	f := strings.Fields(m.Text)
+	if len(f) != 2 || (f[0] != "/start" && !strings.HasPrefix(f[0], "/start@")) {
+		return
+	}
+	// Errors carry no token and are expected (a used link, a group): no
+	// reply, no log line per stranger who types /start.
+	_ = p.Start(f[1], strconv.FormatInt(m.Chat.ID, 10), strconv.FormatInt(m.From.ID, 10))
+}
+
 func (p *TelegramPoller) getUpdates(ctx context.Context, offset int, timeout time.Duration) ([]tgUpdate, error) {
+	allowed := `["callback_query"]`
+	if p.Start != nil {
+		allowed = `["callback_query","message"]`
+	}
 	q := url.Values{
 		"timeout":         {strconv.Itoa(int(timeout / time.Second))},
 		"offset":          {strconv.Itoa(offset)},
-		"allowed_updates": {`["callback_query"]`},
+		"allowed_updates": {allowed},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		p.BaseURL+"/bot"+p.Token+"/getUpdates?"+q.Encode(), nil)
@@ -168,6 +222,33 @@ func (p *TelegramPoller) getUpdates(ctx context.Context, offset int, timeout tim
 		return nil, fmt.Errorf("telegram: %s", out.Description)
 	}
 	return out.Result, nil
+}
+
+// getMe returns the bot's username.
+func (p *TelegramPoller) getMe(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.BaseURL+"/bot"+p.Token+"/getMe", nil)
+	if err != nil {
+		return "", redact(err, p.Token)
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", redact(err, p.Token)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
+			Username string `json:"username"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decode getMe: %w", err)
+	}
+	if !out.OK || out.Result.Username == "" {
+		return "", fmt.Errorf("telegram getMe: %s", out.Description)
+	}
+	return out.Result.Username, nil
 }
 
 func (p *TelegramPoller) answer(ctx context.Context, callbackID, text string) error {

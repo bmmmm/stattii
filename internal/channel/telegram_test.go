@@ -5,10 +5,12 @@ package channel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -378,5 +380,106 @@ func TestPollerLogsAnswerFailure(t *testing.T) {
 				t.Fatal("poller never logged the answerCallbackQuery failure")
 			}
 		})
+	}
+}
+
+// TestPollerPassesStartToOnboarding — #13: the poller asks for messages,
+// hands "/start <payload>" (also "/start@bot <payload>") to Start with
+// chat and sender ids, drops every other message, answers none of them,
+// never logs the payload, and learns the bot's username from getMe.
+func TestPollerPassesStartToOnboarding(t *testing.T) {
+	var served atomic.Bool
+	var askedForMessages, answered atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"username":"stattii_bot"}}`))
+		case strings.HasSuffix(r.URL.Path, "/getUpdates"):
+			if strings.Contains(r.URL.Query().Get("allowed_updates"), `"message"`) {
+				askedForMessages.Store(true)
+			}
+			if r.URL.Query().Get("offset") == "-1" {
+				w.Write([]byte(`{"ok":true,"result":[]}`))
+				return
+			}
+			if served.CompareAndSwap(false, true) {
+				w.Write([]byte(`{"ok":true,"result":[
+					{"update_id":1,"message":{"text":"/start SENTINELonboard","chat":{"id":4242},"from":{"id":4242}}},
+					{"update_id":2,"message":{"text":"hello","chat":{"id":4242},"from":{"id":4242}}},
+					{"update_id":3,"message":{"text":"/start","chat":{"id":4242},"from":{"id":4242}}},
+					{"update_id":4,"message":{"text":"/start@stattii_bot SENTINELgroup","chat":{"id":-100},"from":{"id":4242}}},
+					{"update_id":5,"message":{"text":"/start SENTINELpost","chat":{"id":-200}}}
+				]}`))
+				return
+			}
+			w.Write([]byte(`{"ok":true,"result":[]}`))
+		default:
+			answered.Store(true)
+			w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	type call struct{ token, chat, from string }
+	calls := make(chan call, 10)
+	names := make(chan string, 1)
+	var logs strings.Builder
+	var logMu sync.Mutex
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	p := &TelegramPoller{
+		Token: "TOK", BaseURL: srv.URL,
+		Logf: func(format string, args ...any) {
+			logMu.Lock()
+			defer logMu.Unlock()
+			logs.WriteString(fmt.Sprintf(format, args...) + "\n")
+		},
+		Apply: func(token, fromID string) (string, error) { return "", nil },
+		Start: func(token, chatID, fromID string) error {
+			calls <- call{token, chatID, fromID}
+			return core.ErrNotFound // Start's refusals must not turn into a reply or a log line
+		},
+		BotName: func(u string) { names <- u },
+	}
+	go func() {
+		p.Run(ctx)
+		close(done)
+	}()
+	want := []call{{"SENTINELonboard", "4242", "4242"}, {"SENTINELgroup", "-100", "4242"}}
+	for i, w := range want {
+		select {
+		case got := <-calls:
+			if got != w {
+				t.Fatalf("Start call %d = %+v, want %+v", i, got, w)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("poller never passed /start %d to Start", i)
+		}
+	}
+	select {
+	case u := <-names:
+		if u != "stattii_bot" {
+			t.Fatalf("BotName got %q", u)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("poller never reported the bot's name")
+	}
+	cancel()
+	<-done
+	select {
+	case extra := <-calls:
+		t.Fatalf("a message that is no /start <payload> from a sender reached Start: %+v", extra)
+	default:
+	}
+	if !askedForMessages.Load() {
+		t.Fatal("getUpdates never asked for messages")
+	}
+	if answered.Load() {
+		t.Fatal("the poller answered a /start — refusals must stay silent")
+	}
+	logMu.Lock()
+	defer logMu.Unlock()
+	if strings.Contains(logs.String(), "SENTINEL") {
+		t.Fatalf("an onboarding token reached the log:\n%s", logs.String())
 	}
 }

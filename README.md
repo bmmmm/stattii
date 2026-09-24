@@ -137,6 +137,17 @@ equals an individual member's own id) and is applied unverified instead of
 refused outright, so a shared team chat keeps working; that press is still
 marked `unverified: not a private chat id` in the audit log.
 
+Nobody has to look up a chat id: `stattii person telegram-link <id>` (or
+the button on the panel's people page) mints a one-shot deep link,
+`https://t.me/<bot>?start=<token>`. The person taps it, Telegram sends
+`/start <token>` to the bot, and the poller makes that private chat
+their telegram channel — replacing a hand-typed id if there was one
+(audited as `person.updated`, channel kinds only)
+and confirms in the chat. The link works once, expires after 7 days, and
+minting a new one revokes the old; a group chat binds nothing. Until the
+bot has answered `getMe`, the link is shown as the `/start <token>` line
+to send by hand.
+
 ## Cancellation propagation
 
 `stattii event cancel <id> --reason "storm"` (or a responsible person's

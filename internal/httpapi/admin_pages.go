@@ -217,6 +217,8 @@ var adminTmpl = template.Must(template.Must(tmpl.Clone()).Parse(`
   <p class="muted">Portal: <a href="{{.PortalURL}}">{{.PortalURL}}</a></p>
   <form method="post" action="/admin/people/{{.ID}}/test">{{template "csrf" $.CSRF}}<button type="submit">Send test message</button></form>
   <form method="post" action="/admin/people/{{.ID}}/rotate-portal">{{template "csrf" $.CSRF}}<button type="submit">Rotate portal link</button></form>
+  {{with .TelegramLink}}<p class="muted">Telegram onboarding (single use, until {{.ExpiresAt.Local.Format "02 Jan 15:04"}}): {{if .URL}}<a href="{{.URL}}">{{.URL}}</a>{{else}}send <code>{{.Start}}</code> to the bot{{end}}</p>{{end}}
+  <form method="post" action="/admin/people/{{.ID}}/telegram-link">{{template "csrf" $.CSRF}}<button type="submit">{{if .TelegramLink}}New{{else}}Create{{end}} Telegram onboarding link</button></form>
   <details><summary>Edit</summary>
   <form method="post" action="/admin/people/{{.ID}}/edit">{{template "csrf" $.CSRF}}
     <label>Name <input name="name" value="{{.Name}}" required></label>

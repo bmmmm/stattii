@@ -132,6 +132,7 @@ func (s *Server) AdminHandler() http.Handler {
 		"DELETE /api/v1/series-assignments":          s.deleteSeriesAssignment,
 		"POST /api/v1/people/{id}/test-message":      s.testMessage,
 		"POST /api/v1/people/{id}/rotate-portal":     s.rotatePortal,
+		"POST /api/v1/people/{id}/telegram-link":     s.telegramLink,
 		"DELETE /api/v1/people/{id}/links":           s.revokePersonLinks,
 		"DELETE /api/v1/events/{id}/links":           s.revokeEventLinks,
 		"POST /api/v1/assignments":                   s.assign,
@@ -463,6 +464,13 @@ func (s *Server) makeLinks(w http.ResponseWriter, r *http.Request) {
 func (s *Server) rotatePortal(w http.ResponseWriter, r *http.Request) {
 	url, err := s.svc.RotatePortal(r.PathValue("id"))
 	respond(w, map[string]string{"portal_url": url}, err, http.StatusOK)
+}
+
+// telegramLink mints the person's one-shot Telegram onboarding link
+// (#13), replacing any earlier one.
+func (s *Server) telegramLink(w http.ResponseWriter, r *http.Request) {
+	v, err := s.svc.CreateTelegramOnboarding(r.PathValue("id"))
+	respond(w, v, err, http.StatusOK)
 }
 
 // revokeEventLinks kills the event's action links — all of them, or one

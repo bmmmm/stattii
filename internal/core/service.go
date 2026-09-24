@@ -134,6 +134,9 @@ type Service struct {
 	// process, and the items are simply attempted again.
 	sending   map[string]int
 	sendingTo map[string]int
+	// telegramBot is the bot's username, learned by the poller (getMe);
+	// onboarding links are built on it. In-memory: asked again per start.
+	telegramBot string
 }
 
 func NewService(store Store, cfg Config, notify Notifier) (*Service, error) {
