@@ -578,6 +578,12 @@ func (s *Service) AddPerson(name string, trust TrustLevel, channels []Address) (
 	// A person may have no channel yet (they get one later) — but never a
 	// blank one: {"kind":"","to":""} would count as "has a channel" and
 	// silently defeat every reachability check downstream.
+	// A display copied from a view ("https://host/[redacted]") is no
+	// target; with nothing stored yet there is nothing to restore it to.
+	channels, err := restoreShown(nil, channels)
+	if err != nil {
+		return Person{}, err
+	}
 	for _, ch := range channels {
 		if err := ch.Validate(); err != nil {
 			return Person{}, err
@@ -592,6 +598,7 @@ func (s *Service) AddPerson(name string, trust TrustLevel, channels []Address) (
 	s.state.People = append(s.state.People, p)
 	s.auditLocked("person.created", map[string]any{"person_id": p.ID, "name": name, "trust": trust})
 	s.saveLocked()
+	p.Channels = shownChannels(p.Channels)
 	return p, nil
 }
 
@@ -632,6 +639,7 @@ func (s *Service) AddBroadcast(name, kind, to string) (Broadcast, error) {
 	s.state.Broadcasts = append(s.state.Broadcasts, b)
 	s.auditLocked("broadcast.created", map[string]any{"broadcast_id": b.ID, "kind": kind})
 	s.saveLocked()
+	b.To = shownAddress(kind, to)
 	return b, nil
 }
 
@@ -647,6 +655,8 @@ func (s *Service) AddWebhook(url string, events []string) (Webhook, error) {
 	// too), so the record keeps only which host it points at.
 	s.auditLocked("webhook.created", map[string]any{"webhook_id": w.ID, "url": redactTarget(url)})
 	s.saveLocked()
+	// The secret is shown this once; the target never again (#16).
+	w.URL = shownTarget(url)
 	return w, nil
 }
 

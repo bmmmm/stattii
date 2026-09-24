@@ -353,7 +353,10 @@ broadcasts, webhooks, proposals, audit, overview, `tick`,
 `calendar/fetch`. Webhook
 payloads are signed: `X-Stattii-Signature: sha256=<hex hmac of body>` with
 the per-subscription secret returned **once, on registration** (the list
-endpoint redacts it).
+endpoint redacts it). A webhook target URL is a credential as well: every
+API response and the panel show it as scheme+host only
+(`https://host/[redacted]`), and a `PATCH` that sends such a display back
+keeps the stored target.
 
 Public surface (rate-limited): the tokenized `/a/<token>`, `/p/<token>`,
 and `/i/<token>` pages, plus `/feed.ics` and `/healthz`. The feed is

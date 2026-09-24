@@ -156,7 +156,9 @@ func (a Address) Validate() error {
 	case "webhook":
 		u, err := url.Parse(a.To)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("webhook %q must be an http(s) URL", a.To)
+			// The target is a credential even when it is malformed: this
+			// text reaches channel.invalid, the panel and the admin mail.
+			return fmt.Errorf("webhook %q must be an http(s) URL", shownTarget(a.To))
 		}
 	default:
 		return fmt.Errorf("unknown channel kind %q (use email, telegram, or webhook)", a.Kind)

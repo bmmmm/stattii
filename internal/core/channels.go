@@ -57,7 +57,8 @@ func (s *Service) channelProblemsLocked() []ChannelProblem {
 				continue
 			}
 			out = append(out, ChannelProblem{
-				PersonID: p.ID, Name: p.Name, Kind: ch.Kind, To: ch.To,
+				// Panel, API and admin mail all read this: never the raw target.
+				PersonID: p.ID, Name: p.Name, Kind: ch.Kind, To: shownAddress(ch.Kind, ch.To),
 				Problem: problem, Assigned: upcoming[p.ID],
 			})
 		}

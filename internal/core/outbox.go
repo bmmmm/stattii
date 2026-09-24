@@ -205,6 +205,7 @@ func (s *Service) Propagation(eventID string) (PropagationStatus, error) {
 	// "never propagated" out of Empty entirely.
 	ps.Empty = !e.FanOutAt.IsZero() && e.FanOutCount == 0 && ps.Total == 0
 	ps.Complete = ps.Total > 0 && ps.Delivered == ps.Total
+	ps.Items = shownOutbox(ps.Items)
 	return ps, nil
 }
 

@@ -218,7 +218,10 @@ func TestAdminPeopleEditAndUnassign(t *testing.T) {
 	for _, ch := range got.Channels {
 		kinds[ch.Kind] = ch.To
 	}
-	if kinds["email"] != "ana@new.local" || kinds["telegram"] != "99" || kinds["webhook"] != "https://hooks.x.local/ana" {
+	// The view shows the webhook as scheme+host (#16); that the stored
+	// target survives the round trip is pinned in core
+	// (TestShownWebhookRoundTripKeepsTheStoredTarget).
+	if kinds["email"] != "ana@new.local" || kinds["telegram"] != "99" || kinds["webhook"] != "https://hooks.x.local/[redacted]" {
 		t.Fatalf("two-field form lost a channel: %+v", got.Channels)
 	}
 	if got.ID != p.ID || got.PortalToken != p.PortalToken {
@@ -390,5 +393,68 @@ func TestAdminPanelShowsBrokenChannels(t *testing.T) {
 	ev := get("/admin/event/ev_legacy")
 	if !strings.Contains(ev, "channel looks broken") {
 		t.Fatalf("event page does not flag the suspect channel:\n%s", ev)
+	}
+}
+
+// TestAdminSurfacesShowWebhookHostOnly — #16, owner decision 2026-09-24:
+// a webhook target is a credential behind admin auth too. Neither the
+// API nor the panel hands it out; both show scheme+host.
+func TestAdminSurfacesShowWebhookHostOnly(t *testing.T) {
+	const secret = "SENTINELadminSECRETpath"
+	const hook = "https://hooks.x.local/services/" + secret
+	start := time.Now().Add(48 * time.Hour).UTC()
+	seed := &core.State{
+		People: []core.Person{{
+			ID: "pe_broken", Name: "bo", Trust: core.TrustRespond, PortalToken: "tok_broken",
+			Channels: []core.Address{{Kind: "webhook", To: "hooks.x.local/" + secret}},
+		}},
+		Events: []core.Event{{
+			ID: "ev_1", Title: "Quiet Night", StartsAt: start, EndsAt: start.Add(time.Hour),
+			Status: core.StatusScheduled, IfUnconfirmed: "notify",
+		}},
+		Assignments: []core.Assignment{{EventID: "ev_1", PersonID: "pe_broken"}},
+	}
+	svc, _, admin := newTestServerWithState(t, seed)
+	p, err := svc.AddPerson("ana", core.TrustRespond, []core.Address{{Kind: "webhook", To: hook}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddBroadcast("board", "webhook", hook); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddWebhook(hook, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SendTest(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelEvent("ev_1", "", "flood", "api"); err != nil {
+		t.Fatal(err)
+	}
+	ui := loginAdmin(t, admin)
+	for _, path := range []string{
+		"/api/v1/people", "/api/v1/broadcasts", "/api/v1/webhooks", "/api/v1/outbox",
+		"/api/v1/events/ev_1/propagation", "/admin", "/admin/people", "/admin/event/ev_1",
+	} {
+		t.Run(path, func(t *testing.T) {
+			var rec *httptest.ResponseRecorder
+			if strings.HasPrefix(path, "/api/") {
+				rec = do(t, admin, "GET", path, testToken, "")
+			} else {
+				req := httptest.NewRequest("GET", path, nil)
+				req.AddCookie(ui.c)
+				rec = httptest.NewRecorder()
+				admin.ServeHTTP(rec, req)
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s: %d", path, rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), secret) {
+				t.Fatalf("GET %s hands out the webhook target:\n%s", path, rec.Body)
+			}
+			if !strings.Contains(rec.Body.String(), "hooks.x.local") {
+				t.Fatalf("GET %s no longer names the target's host:\n%s", path, rec.Body)
+			}
+		})
 	}
 }

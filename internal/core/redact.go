@@ -4,6 +4,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -65,6 +66,78 @@ func redactTarget(raw string) string {
 		return redactedMark
 	}
 	return u.Scheme + "://" + strings.TrimSuffix(u.Host, ":")
+}
+
+// shownTarget renders a webhook target for every surface outside the
+// stored record — API responses, the admin panel, admin mail, operator-
+// facing errors (owner decision 2026-09-24, #16: the URL is a credential
+// behind admin auth too, like Webhook.Secret). It is redactTarget plus
+// the marker whenever anything was dropped, so hidden never reads as
+// empty, and a display copied back into a write is recognisable as one
+// (restoreShown).
+func shownTarget(raw string) string {
+	out := redactTarget(raw)
+	if out != redactedMark && out != raw && out+"/" != raw {
+		out += "/" + redactedMark
+	}
+	return out
+}
+
+// shownAddress is shownTarget for a webhook and the address itself for
+// every other kind — a mail address or chat id is no credential.
+func shownAddress(kind, to string) string {
+	if kind == "webhook" {
+		return shownTarget(to)
+	}
+	return to
+}
+
+// shownChannels copies a channel list for a view, webhook targets cut.
+func shownChannels(chs []Address) []Address {
+	if chs == nil {
+		return nil
+	}
+	out := make([]Address, len(chs))
+	for i, ch := range chs {
+		out[i] = Address{Kind: ch.Kind, To: shownAddress(ch.Kind, ch.To)}
+	}
+	return out
+}
+
+// shownOutbox cuts the target of a view's outbox items in place (the
+// caller owns the copies).
+func shownOutbox(items []OutboxItem) []OutboxItem {
+	for i := range items {
+		items[i].To = shownAddress(items[i].Kind, items[i].To)
+	}
+	return items
+}
+
+// restoreShown puts a stored webhook target back where a write carries
+// its display: the panel and `person set` read the person through a view
+// and send the whole list back, so without this a webhook would be
+// overwritten by its own scheme+host. A marked target that matches none
+// of the stored ones is refused — it never was an address.
+func restoreShown(stored, in []Address) ([]Address, error) {
+	pool := map[string][]string{}
+	for _, ch := range stored {
+		if ch.Kind == "webhook" {
+			d := shownTarget(ch.To)
+			pool[d] = append(pool[d], ch.To)
+		}
+	}
+	out := make([]Address, 0, len(in))
+	for _, ch := range in {
+		if ch.Kind == "webhook" && strings.Contains(ch.To, redactedMark) {
+			vals := pool[ch.To]
+			if len(vals) == 0 {
+				return nil, fmt.Errorf("webhook %q is the redacted display of a target, not a target — give the full URL", ch.To)
+			}
+			ch.To, pool[ch.To] = vals[0], vals[1:]
+		}
+		out = append(out, ch)
+	}
+	return out, nil
 }
 
 // redactTargetIn cuts a target that is itself the credential out of a

@@ -41,21 +41,26 @@ func (s *Service) UpdatePerson(id string, in PersonUpdate) (Person, error) {
 	if in.Trust != nil && !in.Trust.Valid() {
 		return Person{}, fmt.Errorf("invalid trust %q (use respond, propose, or direct)", *in.Trust)
 	}
-	var channels []Address
-	if in.Channels != nil {
-		channels = make([]Address, 0, len(*in.Channels))
-		for _, ch := range *in.Channels {
-			if err := ch.Validate(); err != nil {
-				return Person{}, err
-			}
-			channels = append(channels, ch)
-		}
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.state.Person(id)
 	if p == nil {
 		return Person{}, ErrNotFound
+	}
+	var channels []Address
+	if in.Channels != nil {
+		// Restored before validation: the panel and `person set` send
+		// back what the view showed them (a webhook as scheme+host).
+		restored, err := restoreShown(p.Channels, *in.Channels)
+		if err != nil {
+			return Person{}, err
+		}
+		for _, ch := range restored {
+			if err := ch.Validate(); err != nil {
+				return Person{}, err
+			}
+		}
+		channels = restored
 	}
 	audit := map[string]any{"person_id": id}
 	var fields []string
@@ -76,7 +81,7 @@ func (s *Service) UpdatePerson(id string, in PersonUpdate) (Person, error) {
 		fields = append(fields, "channels")
 	}
 	out := *p
-	out.Channels = append([]Address(nil), p.Channels...)
+	out.Channels = shownChannels(p.Channels)
 	if len(fields) == 0 {
 		return out, nil // a no-op patch is not an audit event
 	}

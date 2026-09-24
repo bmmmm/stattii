@@ -32,10 +32,13 @@ func (s *Service) People() []Person {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Deep copy: a struct copy alone would share Channels with live state,
-	// letting callers mutate it outside the lock.
+	// letting callers mutate it outside the lock. Webhook targets are cut
+	// to scheme+host: a view is what the API and the panel hand out (#16);
+	// a write that echoes a display back gets the stored target restored
+	// (restoreShown).
 	out := append([]Person(nil), s.state.People...)
 	for i := range out {
-		out[i].Channels = append([]Address(nil), out[i].Channels...)
+		out[i].Channels = shownChannels(out[i].Channels)
 	}
 	return out
 }
@@ -59,7 +62,11 @@ func (s *Service) Proposals() []Proposal {
 func (s *Service) Broadcasts() []Broadcast {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]Broadcast(nil), s.state.Broadcasts...)
+	out := append([]Broadcast(nil), s.state.Broadcasts...)
+	for i := range out {
+		out[i].To = shownAddress(out[i].Kind, out[i].To)
+	}
+	return out
 }
 
 func (s *Service) Webhooks() []Webhook {
@@ -68,6 +75,7 @@ func (s *Service) Webhooks() []Webhook {
 	out := append([]Webhook(nil), s.state.Webhooks...)
 	for i := range out {
 		out[i].Events = append([]string(nil), out[i].Events...)
+		out[i].URL = shownTarget(out[i].URL)
 	}
 	return out
 }
@@ -212,7 +220,7 @@ func (s *Service) OutboxItems(pendingOnly bool) []OutboxItem {
 		}
 		out = append(out, o)
 	}
-	return out
+	return shownOutbox(out)
 }
 
 // RetryOutbox re-arms a failed or stuck item; the next tick attempts it.
@@ -225,7 +233,7 @@ func (s *Service) RetryOutbox(id string) (OutboxItem, error) {
 			continue
 		}
 		if o.Delivered() {
-			return *o, errors.New("already delivered — nothing to retry")
+			return shownOutbox([]OutboxItem{*o})[0], errors.New("already delivered — nothing to retry")
 		}
 		o.Attempts = 0
 		o.NextAttempt = s.now()
@@ -237,7 +245,7 @@ func (s *Service) RetryOutbox(id string) (OutboxItem, error) {
 		}
 		s.auditLocked("outbox.retry", map[string]any{"outbox_id": id})
 		s.saveLocked()
-		return *o, nil
+		return shownOutbox([]OutboxItem{*o})[0], nil
 	}
 	return OutboxItem{}, ErrNotFound
 }
@@ -264,7 +272,7 @@ func (s *Service) SendTest(personID string) ([]OutboxItem, error) {
 			out = append(out, o)
 		}
 	}
-	return out, nil
+	return shownOutbox(out), nil
 }
 
 // enqueueTest is the locked half of SendTest: queue the test messages

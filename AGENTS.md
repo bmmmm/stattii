@@ -150,11 +150,24 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    down). `webhook.created` audits scheme+host only; the calendar fetch
    and its bookkeeping scrub theirs. `redactURLs` matches the scheme
    case-insensitively and fails **closed** on a URL that does not parse.
-   A new error sink goes behind one of these cuts. Known gap, tracked in
-   #16: a stored person channel whose webhook URL fails `Validate` is
-   echoed by `Address.Problem` into `channel.invalid`, the admin page and
-   the admin mail (`channels.go`).
-   Guarded by
+   A new error sink goes behind one of these cuts.
+   **Behind admin auth too** (owner decision 2026-09-24, #16): a webhook
+   target never leaves the stored record whole. Every `Service` method
+   that hands addresses out — the views (`People`, `Broadcasts`,
+   `Webhooks`, `OutboxItems`, `Propagation`, `ChannelProblems`) and the
+   results of `AddPerson`/`UpdatePerson`/`AddBroadcast`/`AddWebhook`/
+   `SendTest`/`RetryOutbox` — shows it as `shownTarget` (scheme+host plus
+   `[redacted]`), and `Validate`'s error names it the same way, so
+   `Address.Problem` no longer carries an invalid one into
+   `channel.invalid`, the panel or the admin mail. The panel and
+   `person set` write back what the view showed them, so
+   `AddPerson`/`UpdatePerson` run `restoreShown` first: a display becomes
+   the stored target again, one that matches nothing stored is refused.
+   Only `Webhook.Secret` is shown once, on registration. Guarded by
+   `TestWebhookTargetIsShownAsHostOnEverySurface`,
+   `TestInvalidStoredWebhookStaysOutOfTheReport`,
+   `TestShownWebhookRoundTripKeepsTheStoredTarget` and
+   `TestAdminSurfacesShowWebhookHostOnly`, and by
    `TestOutboxTransportErrorHidesCredentials`,
    `TestWebhookTargetShapesTheScrubMissedStayHidden`,
    `TestWebhookErrorKeepsItsReason`,
