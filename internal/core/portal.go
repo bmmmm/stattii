@@ -151,12 +151,12 @@ func (s *Service) PortalSubmit(token, kind, eventID, title, note string, start, 
 		s.saveLocked()
 		return true, nil
 	case TrustPropose:
-		s.fileProposalLocked(Proposal{
+		_, err := s.fileProposalLocked(Proposal{
 			PersonID: p.ID, Kind: kind, EventID: eventID,
 			Title: title, Note: note, StartsAt: start, EndsAt: end,
 		}, p.Name, "portal",
 			fmt.Sprintf("%s proposes: %s %s %s\nDecide: stattii proposal list / decide", p.Name, kind, eventID, title))
-		return false, nil
+		return false, err
 	default:
 		return false, ErrForbidden
 	}
@@ -204,9 +204,36 @@ func (s *Service) DecideProposal(id string, accept bool) (Proposal, error) {
 	return *pr, nil
 }
 
+// MaxOpenProposalsPerPerson is the budget of undecided proposals one
+// person may hold (audit M5, #15, owner decision 2026-09-24). Every
+// proposal pages the admin and stays in state.Proposals, and the portal
+// and action links are capabilities that get forwarded or leak — without
+// a ceiling one holder could send the operator a mail per submit. It is
+// counted per PERSON, so every token that files as them (portal, each
+// action link) shares it, and over OPEN proposals: deciding one is the
+// operator acting, and gives the slot back. A const like
+// MaxGuestsPerEvent — the one sibling cap is not configurable either.
+const MaxOpenProposalsPerPerson = 10
+
+// ErrProposalBudget refuses a proposal past the budget. The text is
+// recipient-facing: it renders on the portal and action pages.
+var ErrProposalBudget = fmt.Errorf("you already have %d proposals waiting for a decision — "+
+	"a new one can be filed once the operator has decided one of them", MaxOpenProposalsPerPerson)
+
 // fileProposalLocked stamps, records, audits, webhooks, and pages the admin
-// about a new proposal — the shared tail of every proposal entry point.
-func (s *Service) fileProposalLocked(pr Proposal, personName, via, adminBody string) Proposal {
+// about a new proposal — the shared tail of every proposal entry point, and
+// therefore where the budget is enforced. A refusal records nothing: an
+// audit line per refused submit would be the next unbounded append.
+func (s *Service) fileProposalLocked(pr Proposal, personName, via, adminBody string) (Proposal, error) {
+	open := 0
+	for _, x := range s.state.Proposals {
+		if x.PersonID == pr.PersonID && x.DecidedAt.IsZero() {
+			open++
+		}
+	}
+	if open >= MaxOpenProposalsPerPerson {
+		return Proposal{}, ErrProposalBudget
+	}
 	pr.ID = NewID("pr")
 	pr.CreatedAt = s.now()
 	s.state.Proposals = append(s.state.Proposals, pr)
@@ -214,7 +241,7 @@ func (s *Service) fileProposalLocked(pr Proposal, personName, via, adminBody str
 	s.fireWebhooksLocked("proposal.created", pr)
 	s.notifyAdminLocked("Proposal from "+personName, adminBody)
 	s.saveLocked()
-	return pr
+	return pr, nil
 }
 
 // applyChangeLocked executes a cancel/move/create on behalf of a person —

@@ -58,6 +58,9 @@ Every person gets a long-lived portal link (`/p/<token>`) listing their
 events; per-event action links (`/a/<token>`) expire with the event.
 Independent of trust level, every action page offers "suggest a new time
 instead" — that files a proposal, which never changes anything by itself.
+Each proposal mails the admin, so a person holds at most 10 undecided
+proposals at a time, portal and action links together; deciding one
+frees its slot (a forwarded or leaked link cannot flood the operator).
 The cancel page also takes an optional reason; it travels in every notice
 ("Cancelled by Ana. Reason: …").
 

@@ -161,12 +161,11 @@ func (s *Service) ProposeMoveViaLink(token string, start, end time.Time, note st
 	if err != nil {
 		return Proposal{}, err
 	}
-	pr := s.fileProposalLocked(Proposal{
+	return s.fileProposalLocked(Proposal{
 		PersonID: p.ID, Kind: "move", EventID: e.ID,
 		StartsAt: start, EndsAt: end, Note: note,
 	}, p.Name, "link",
 		fmt.Sprintf("%s proposes to move %q to %s.", p.Name, e.Title, start.Format(timeFmt)))
-	return pr, nil
 }
 
 // ApplyAction performs the link's action. Only ever called on POST — a GET
