@@ -178,6 +178,11 @@ tokens at rest): [ARCHITECTURE.md](ARCHITECTURE.md).
    `TestImportBookkeepingRedactsWhatReachesIt`,
    `TestRedactURLsCutsEveryShape` and
    `TestTelegramSendTransportErrorHidesToken`.
+13. **`/feed.ics` is public** (owner decision 2026-09-24, #14): no token,
+   every event, and therefore only what a public calendar may say —
+   UID, times, `SUMMARY`, `SEQUENCE`, `STATUS`. Never `DESCRIPTION`
+   (note, cancellation reason) or `LOCATION`; a new property needs the
+   same question asked. Guarded by `TestFeedIsPublicAndCarriesNoNotes`.
 
 ## Build & test
 

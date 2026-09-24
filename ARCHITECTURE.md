@@ -19,7 +19,7 @@ PUBLIC LISTENER (rate-limited per client IP)
   responsibles → GET/POST /a/<token>   one-click confirm/cancel
   responsibles → /p/<token>            portal: respond/move/create per trust
   party guests → /i/<token>            RSVP (name, optional email, yes/no)
-  calendar apps → GET /feed.ics        read-only, unauthenticated
+  calendar apps → GET /feed.ics        read-only, public: title/time/status only
 
 ADMIN LISTENER (separate mux — bind it internally)
   operator → /admin (cookie) + /api/v1 (bearer) + CLI
@@ -151,6 +151,11 @@ documented decisions. These are the decisions:
   leaked one is an explicit operator act — rotate it (panel button,
   `person rotate-portal`), and action links revoke the same way
   (`event revoke-links`).
-- **The ICS feed is unauthenticated** and lists all events — it is the
-  passive baseline for calendar apps, and its URL must be treated like
-  a token. Short-notice cancellations never rely on it.
+- **The ICS feed is public** (owner decision 2026-09-24, #14): no
+  token, every event, but only title, times, sequence and status — no
+  `DESCRIPTION` (notes, cancellation reasons) and no `LOCATION`. A
+  capability token in the path would land in upstream access logs and
+  break every existing subscription; stripping the fields keeps
+  subscribers working and leaves nothing internal to leak. It is the
+  passive baseline for calendar apps; short-notice cancellations never
+  rely on it.

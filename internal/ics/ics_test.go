@@ -32,7 +32,6 @@ func TestFeed(t *testing.T) {
 		"SEQUENCE:2",
 		`SUMMARY:Board\, games\; night`,
 		"DTSTART:20260814T120000Z",
-		"Cancelled: storm",
 	} {
 		if !strings.Contains(feed, want) {
 			t.Errorf("feed missing %q", want)

@@ -210,6 +210,52 @@ func TestFeedServed(t *testing.T) {
 	}
 }
 
+// TestFeedIsPublicAndCarriesNoNotes — #14, owner decision 2026-09-24
+// (Option B): /feed.ics is public by design, so it carries what a
+// public calendar may say — title, time, status — and never the event's
+// note, cancellation reason or location. Each field is its own check.
+func TestFeedIsPublicAndCarriesNoNotes(t *testing.T) {
+	svc, h, _ := newTestServer(t)
+	start := time.Now().Add(24 * time.Hour).UTC()
+	kept, err := svc.CreateEvent(core.EventInput{Title: "Open Night", Location: "SENTINELbackRoom",
+		Note: "SENTINELinternalNote", StartsAt: start, EndsAt: start.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, err := svc.CreateEvent(core.EventInput{Title: "Quiet Night", StartsAt: start.Add(48 * time.Hour),
+		EndsAt: start.Add(49 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CancelEvent(gone.ID, "", "SENTINELcancelReason", "api"); err != nil {
+		t.Fatal(err)
+	}
+	w := do(t, h, "GET", "/feed.ics", "", "") // no token: anyone can do this
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d", w.Code)
+	}
+	feed := w.Body.String()
+	for _, c := range []struct{ what, needle string }{
+		{"the location", "SENTINELbackRoom"},
+		{"the note", "SENTINELinternalNote"},
+		{"the cancellation reason", "SENTINELcancelReason"},
+		{"a LOCATION property", "\r\nLOCATION"},
+		{"a DESCRIPTION property", "\r\nDESCRIPTION"},
+	} {
+		if strings.Contains(feed, c.needle) {
+			t.Errorf("the public feed carries %s:\n%s", c.what, feed)
+		}
+	}
+	// What a subscriber needs still arrives: the event, and that the
+	// other one is off.
+	for _, want := range []string{"UID:" + kept.ID + "@stattii", "SUMMARY:Open Night",
+		"UID:" + gone.ID + "@stattii", "STATUS:CANCELLED"} {
+		if !strings.Contains(feed, want) {
+			t.Errorf("the feed lost %q:\n%s", want, feed)
+		}
+	}
+}
+
 func TestPublicRateLimit(t *testing.T) {
 	_, h, _ := newTestServer(t)
 	limited := false

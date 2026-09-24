@@ -17,7 +17,9 @@ import (
 
 const stampFmt = "20060102T150405Z"
 
-// Feed renders all events as one VCALENDAR.
+// Feed renders all events as one VCALENDAR. It is served unauthenticated
+// at /feed.ics, so it carries only what a public calendar may say: title,
+// times, sequence and status.
 func Feed(name string, events []core.Event, now time.Time) string {
 	var b strings.Builder
 	line(&b, "BEGIN:VCALENDAR")
@@ -36,19 +38,9 @@ func Feed(name string, events []core.Event, now time.Time) string {
 			line(&b, "DTEND:"+e.EndsAt.UTC().Format(stampFmt))
 		}
 		line(&b, "SUMMARY:"+escape(e.Title))
-		if e.Location != "" {
-			line(&b, "LOCATION:"+escape(e.Location))
-		}
-		desc := e.Note
-		if e.CancelReason != "" {
-			if desc != "" {
-				desc += "\n"
-			}
-			desc += "Cancelled: " + e.CancelReason
-		}
-		if desc != "" {
-			line(&b, "DESCRIPTION:"+escape(desc))
-		}
+		// No LOCATION, no DESCRIPTION: the feed is public (owner decision
+		// 2026-09-24, #14), and the note, the cancellation reason and the
+		// venue are internal. STATUS still says an event is off.
 		line(&b, "SEQUENCE:"+strconv.Itoa(e.Seq))
 		line(&b, "STATUS:"+status(e.Status))
 		line(&b, "END:VEVENT")

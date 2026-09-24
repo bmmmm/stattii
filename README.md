@@ -360,7 +360,10 @@ keeps the stored target.
 
 Public surface (rate-limited): the tokenized `/a/<token>`, `/p/<token>`,
 and `/i/<token>` pages, plus `/feed.ics` and `/healthz`. The feed is
-unauthenticated and lists all events — treat its URL accordingly. Note
+**public**: unauthenticated, no token in its URL, every event in it —
+but only title, times and status (confirmed / tentative / cancelled).
+Notes, cancellation reasons and locations never go into it; they reach
+the responsible people and guests over the active channels. Note
 calendar apps poll ICS feeds slowly (Google: ~12–24 h) — the feed is the
 passive baseline; short-notice cancellations travel through the active
 channels above.
